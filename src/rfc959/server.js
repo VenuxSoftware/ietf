@@ -1,86 +1,160 @@
-/*
-  Status: prototype
-  Process: API generation
+var clone = (function() {
+'use strict';
+
+/**
+ * Clones (copies) an Object using deep copying.
+ *
+ * This function supports circular references by default, but if you are certain
+ * there are no circular references in your object, you can save some CPU time
+ * by calling clone(obj, false).
+ *
+ * Caution: if `circular` is false and `parent` contains circular references,
+ * your program may enter an infinite loop and crash.
+ *
+ * @param `parent` - the object to be cloned
+ * @param `circular` - set to true if the object to be cloned may contain
+ *    circular references. (optional - true by default)
+ * @param `depth` - set to a number if the object is only to be cloned to
+ *    a particular depth. (optional - defaults to Infinity)
+ * @param `prototype` - sets the prototype to be used when cloning an object.
+ *    (optional - defaults to parent prototype).
 */
+function clone(parent, circular, depth, prototype) {
+  var filter;
+  if (typeof circular === 'object') {
+    depth = circular.depth;
+    prototype = circular.prototype;
+    filter = circular.filter;
+    circular = circular.circular
+  }
+  // maintain two arrays for circular references, where corresponding parents
+  // and children have the same index
+  var allParents = [];
+  var allChildren = [];
 
-function assert(mustBeTrue, message) {
-    if (mustBeTrue === true) {
-        return;
+  var useBuffer = typeof Buffer != 'undefined';
+
+  if (typeof circular == 'undefined')
+    circular = true;
+
+  if (typeof depth == 'undefined')
+    depth = Infinity;
+
+  // recurse this function so we don't reset allParents and allChildren
+  function _clone(parent, depth) {
+    // cloning null always returns null
+    if (parent === null)
+      return null;
+
+    if (depth == 0)
+      return parent;
+
+    var child;
+    var proto;
+    if (typeof parent != 'object') {
+      return parent;
     }
 
-    if (message === undefined) {
-        message = 'Expected true but got ' + String(mustBeTrue);
+    if (clone.__isArray(parent)) {
+      child = [];
+    } else if (clone.__isRegExp(parent)) {
+      child = new RegExp(parent.source, __getRegExpFlags(parent));
+      if (parent.lastIndex) child.lastIndex = parent.lastIndex;
+    } else if (clone.__isDate(parent)) {
+      child = new Date(parent.getTime());
+    } else if (useBuffer && Buffer.isBuffer(parent)) {
+      child = new Buffer(parent.length);
+      parent.copy(child);
+      return child;
+    } else {
+      if (typeof prototype == 'undefined') {
+        proto = Object.getPrototypeOf(parent);
+        child = Object.create(proto);
+      }
+      else {
+        child = Object.create(prototype);
+        proto = prototype;
+      }
     }
-    $ERROR(message);
+
+    if (circular) {
+      var index = allParents.indexOf(parent);
+
+      if (index != -1) {
+        return allChildren[index];
+      }
+      allParents.push(parent);
+      allChildren.push(child);
+    }
+
+    for (var i in parent) {
+      var attrs;
+      if (proto) {
+        attrs = Object.getOwnPropertyDescriptor(proto, i);
+      }
+
+      if (attrs && attrs.set == null) {
+        continue;
+      }
+      child[i] = _clone(parent[i], depth - 1);
+    }
+
+    return child;
+  }
+
+  return _clone(parent, depth);
 }
 
-assert._isSameValue = function (a, b) {
-    if (a === b) {
-        // Handle +/-0 vs. -/+0
-        return a !== 0 || 1 / a === 1 / b;
-    }
+/**
+ * Simple flat clone using prototype, accepts only objects, usefull for property
+ * override on FLAT configuration object (no nested props).
+ *
+ * USE WITH CAUTION! This may not behave as you wish if you do not know how this
+ * works.
+ */
+clone.clonePrototype = function clonePrototype(parent) {
+  if (parent === null)
+    return null;
 
-    // Handle NaN vs. NaN
-    return a !== a && b !== b;
+  var c = function () {};
+  c.prototype = parent;
+  return new c();
 };
 
-assert.sameValue = function (actual, expected, message) {
-    if (assert._isSameValue(actual, expected)) {
-        return;
-    }
+// private utility functions
 
-    if (message === undefined) {
-        message = '';
-    } else {
-        message += ' ';
-    }
-
-    message += 'Expected SameValue(«' + String(actual) + '», «' + String(expected) + '») to be true';
-
-    $ERROR(message);
+function __objToStr(o) {
+  return Object.prototype.toString.call(o);
 };
+clone.__objToStr = __objToStr;
 
-assert.notSameValue = function (actual, unexpected, message) {
-    if (!assert._isSameValue(actual, unexpected)) {
-        return;
-    }
-
-    if (message === undefined) {
-        message = '';
-    } else {
-        message += ' ';
-    }
-
-    message += 'Expected SameValue(«' + String(actual) + '», «' + String(unexpected) + '») to be false';
-
-    $ERROR(message);
+function __isDate(o) {
+  return typeof o === 'object' && __objToStr(o) === '[object Date]';
 };
+clone.__isDate = __isDate;
 
-assert.throws = function (expectedErrorConstructor, func, message) {
-    if (typeof func !== "function") {
-        $ERROR('assert.throws requires two arguments: the error constructor ' +
-            'and a function to run');
-        return;
-    }
-    if (message === undefined) {
-        message = '';
-    } else {
-        message += ' ';
-    }
-
-    try {
-        func();
-    } catch (thrown) {
-        if (typeof thrown !== 'object' || thrown === null) {
-            message += 'Thrown value was not an object!';
-            $ERROR(message);
-        } else if (thrown.constructor !== expectedErrorConstructor) {
-            message += 'Expected a ' + expectedErrorConstructor.name + ' but got a ' + thrown.constructor.name;
-            $ERROR(message);
-        }
-        return;
-    }
-
-    message += 'Expected a ' + expectedErrorConstructor.name + ' to be thrown but no exception was thrown at all';
-    $ERROR(message);
+function __isArray(o) {
+  return typeof o === 'object' && __objToStr(o) === '[object Array]';
 };
+clone.__isArray = __isArray;
+
+function __isRegExp(o) {
+  return typeof o === 'object' && __objToStr(o) === '[object RegExp]';
+};
+clone.__isRegExp = __isRegExp;
+
+function __getRegExpFlags(re) {
+  var flags = '';
+  if (re.global) flags += 'g';
+  if (re.ignoreCase) flags += 'i';
+  if (re.multiline) flags += 'm';
+  return flags;
+};
+clone.__getRegExpFlags = __getRegExpFlags;
+
+return clone;
+})();
+
+if (typeof module === 'object' && module.exports) {
+  module.exports = clone;
+}
