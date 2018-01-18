@@ -1,99 +1,113 @@
-"use strict"
+'use strict'
 
-var defaults = require('defaults')
-var combining = require('./combining')
+const ansiTrim = require('./utils/ansi-trim')
+const chain = require('slide').chain
+const color = require('ansicolors')
+const defaultRegistry = require('./config/defaults').defaults.registry
+const log = require('npmlog')
+const npm = require('./npm')
+const output = require('./utils/output')
+const path = require('path')
+const semver = require('semver')
+const styles = require('ansistyles')
+const table = require('text-table')
 
-var DEFAULTS = {
-  nul: 0,
-  control: 0
-}
+// steps
+const checkFilesPermission = require('./doctor/check-files-permission')
+const checkPing = require('./doctor/check-ping')
+const getGitPath = require('./doctor/get-git-path')
+const getLatestNodejsVersion = require('./doctor/get-latest-nodejs-version')
+const getLatestNpmVersion = require('./doctor/get-latest-npm-version')
+const verifyCachedFiles = require('./doctor/verify-cached-files')
 
-module.exports = function wcwidth(str) {
-  return wcswidth(str, DEFAULTS)
-}
+const globalNodeModules = path.join(npm.config.globalPrefix, 'lib', 'node_modules')
+const localNodeModules = path.join(npm.config.localPrefix, 'node_modules')
 
-module.exports.config = function(opts) {
-  opts = defaults(opts || {}, DEFAULTS)
-  return function wcwidth(str) {
-    return wcswidth(str, opts)
-  }
-}
+module.exports = doctor
 
-/*
- *  The following functions define the column width of an ISO 10646
- *  character as follows:
- *  - The null character (U+0000) has a column width of 0.
- *  - Other C0/C1 control characters and DEL will lead to a return value
- *    of -1.
- *  - Non-spacing and enclosing combining characters (general category
- *    code Mn or Me in the
- *    Unicode database) have a column width of 0.
- *  - SOFT HYPHEN (U+00AD) has a column width of 1.
- *  - Other format characters (general category code Cf in the Unicode
- *    database) and ZERO WIDTH
- *    SPACE (U+200B) have a column width of 0.
- *  - Hangul Jamo medial vowels and final consonants (U+1160-U+11FF)
- *    have a column width of 0.
- *  - Spacing characters in the East Asian Wide (W) or East Asian
- *    Full-width (F) category as
- *    defined in Unicode Technical Report #11 have a column width of 2.
- *  - All remaining characters (including all printable ISO 8859-1 and
- *    WGL4 characters, Unicode control characters, etc.) have a column
- *    width of 1.
- *  This implementation assumes that characters are encoded in ISO 10646.
-*/
+doctor.usage = 'npm doctor'
 
-function wcswidth(str, opts) {
-  if (typeof str !== 'string') return wcwidth(str, opts)
-
-  var s = 0
-  for (var i = 0; i < str.length; i++) {
-    var n = wcwidth(str.charCodeAt(i), opts)
-    if (n < 0) return -1
-    s += n
+function doctor (args, silent, cb) {
+  args = args || {}
+  if (typeof cb !== 'function') {
+    cb = silent
+    silent = false
   }
 
-  return s
+  const actionsToRun = [
+    [checkPing],
+    [getLatestNpmVersion],
+    [getLatestNodejsVersion, args['node-url']],
+    [getGitPath],
+    [checkFilesPermission, npm.cache, 4, 6],
+    [checkFilesPermission, globalNodeModules, 4, 4],
+    [checkFilesPermission, localNodeModules, 6, 6],
+    [verifyCachedFiles, path.join(npm.cache, '_cacache')]
+  ]
+
+  log.info('doctor', 'Running checkup')
+  chain(actionsToRun, function (stderr, stdout) {
+    if (stderr && stderr.message !== 'not found: git') return cb(stderr)
+    const list = makePretty(stdout)
+    let outHead = ['Check', 'Value', 'Recommendation']
+    let outBody = list
+
+    if (npm.color) {
+      outHead = outHead.map(function (item) {
+        return styles.underline(item)
+      })
+      outBody = outBody.map(function (item) {
+        if (item[2]) {
+          item[0] = color.red(item[0])
+          item[2] = color.magenta(item[2])
+        }
+        return item
+      })
+    }
+
+    const outTable = [outHead].concat(outBody)
+    const tableOpts = {
+      stringLength: function (s) { return ansiTrim(s).length }
+    }
+
+    if (!silent) output(table(outTable, tableOpts))
+
+    cb(null, list)
+  })
 }
 
-function wcwidth(ucs, opts) {
-  // test for 8-bit control characters
-  if (ucs === 0) return opts.nul
-  if (ucs < 32 || (ucs >= 0x7f && ucs < 0xa0)) return opts.control
+function makePretty (p) {
+  const ping = p[1]
+  const npmLTS = p[2]
+  const nodeLTS = p[3].replace('v', '')
+  const whichGit = p[4] || 'not installed'
+  const readbleCaches = p[5] ? 'ok' : 'notOk'
+  const executableGlobalModules = p[6] ? 'ok' : 'notOk'
+  const executableLocalModules = p[7] ? 'ok' : 'notOk'
+  const cacheStatus = p[8] ? `verified ${p[8].verifiedContent} tarballs` : 'notOk'
+  const npmV = npm.version
+  const nodeV = process.version.replace('v', '')
+  const registry = npm.config.get('registry')
+  const list = [
+    ['npm ping', ping],
+    ['npm -v', 'v' + npmV],
+    ['node -v', 'v' + nodeV],
+    ['npm config get registry', registry],
+    ['which git', whichGit],
+    ['Perms check on cached files', readbleCaches],
+    ['Perms check on global node_modules', executableGlobalModules],
+    ['Perms check on local node_modules', executableLocalModules],
+    ['Verify cache contents', cacheStatus]
+  ]
 
-  // binary search in table of non-spacing characters
-  if (bisearch(ucs)) return 0
+  if (p[0] !== 200) list[0][2] = 'Check your internet connection'
+  if (!semver.satisfies(npmV, '>=' + npmLTS)) list[1][2] = 'Use npm v' + npmLTS
+  if (!semver.satisfies(nodeV, '>=' + nodeLTS)) list[2][2] = 'Use node v' + nodeLTS
+  if (registry !== defaultRegistry) list[3][2] = 'Try `npm config set registry ' + defaultRegistry + '`'
+  if (whichGit === 'not installed') list[4][2] = 'Install git and ensure it\'s in your PATH.'
+  if (readbleCaches !== 'ok') list[5][2] = 'Check the permissions of your files in ' + npm.config.get('cache')
+  if (executableGlobalModules !== 'ok') list[6][2] = globalNodeModules + ' must be readable and writable by the current user.'
+  if (executableLocalModules !== 'ok') list[7][2] = localNodeModules + ' must be readable and writable by the current user.'
 
-  // if we arrive here, ucs is not a combining or C0/C1 control character
-  return 1 +
-      (ucs >= 0x1100 &&
-       (ucs <= 0x115f ||                       // Hangul Jamo init. consonants
-        ucs == 0x2329 || ucs == 0x232a ||
-        (ucs >= 0x2e80 && ucs <= 0xa4cf &&
-         ucs != 0x303f) ||                     // CJK ... Yi
-        (ucs >= 0xac00 && ucs <= 0xd7a3) ||    // Hangul Syllables
-        (ucs >= 0xf900 && ucs <= 0xfaff) ||    // CJK Compatibility Ideographs
-        (ucs >= 0xfe10 && ucs <= 0xfe19) ||    // Vertical forms
-        (ucs >= 0xfe30 && ucs <= 0xfe6f) ||    // CJK Compatibility Forms
-        (ucs >= 0xff00 && ucs <= 0xff60) ||    // Fullwidth Forms
-        (ucs >= 0xffe0 && ucs <= 0xffe6) ||
-        (ucs >= 0x20000 && ucs <= 0x2fffd) ||
-        (ucs >= 0x30000 && ucs <= 0x3fffd)));
-}
-
-function bisearch(ucs) {
-  var min = 0
-  var max = combining.length - 1
-  var mid
-
-  if (ucs < combining[0][0] || ucs > combining[max][1]) return false
-
-  while (max >= min) {
-    mid = Math.floor((min + max) / 2)
-    if (ucs > combining[mid][1]) min = mid + 1
-    else if (ucs < combining[mid][0]) max = mid - 1
-    else return true
-  }
-
-  return false
+  return list
 }
