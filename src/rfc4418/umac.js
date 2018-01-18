@@ -1,297 +1,339 @@
-"use strict"
+'use strict'
 
-const wcwidth = require('./width')
-const {
-  padRight,
-  padCenter,
-  padLeft,
-  splitIntoLines,
-  splitLongWords,
-  truncateString
-} = require('./utils')
-
-const DEFAULT_HEADING_TRANSFORM = key => key.toUpperCase()
-
-const DEFAULT_DATA_TRANSFORM = (cell, column, index) => cell
-
-const DEFAULTS = Object.freeze({
-  maxWidth: Infinity,
-  minWidth: 0,
-  columnSplitter: ' ',
-  truncate: false,
-  truncateMarker: '…',
-  preserveNewLines: false,
-  paddingChr: ' ',
-  showHeaders: true,
-  headingTransform: DEFAULT_HEADING_TRANSFORM,
-  dataTransform: DEFAULT_DATA_TRANSFORM
-})
-
-module.exports = function(items, options = {}) {
-
-  let columnConfigs = options.config || {}
-  delete options.config // remove config so doesn't appear on every column.
-
-  let maxLineWidth = options.maxLineWidth || Infinity
-  if (maxLineWidth === 'auto') maxLineWidth = process.stdout.columns || Infinity
-  delete options.maxLineWidth // this is a line control option, don't pass it to column
-
-  // Option defaults inheritance:
-  // options.config[columnName] => options => DEFAULTS
-  options = mixin({}, DEFAULTS, options)
-
-  options.config = options.config || Object.create(null)
-
-  options.spacing = options.spacing || '\n' // probably useless
-  options.preserveNewLines = !!options.preserveNewLines
-  options.showHeaders = !!options.showHeaders;
-  options.columns = options.columns || options.include // alias include/columns, prefer columns if supplied
-  let columnNames = options.columns || [] // optional user-supplied columns to include
-
-  items = toArray(items, columnNames)
-
-  // if not suppled column names, automatically determine columns from data keys
-  if (!columnNames.length) {
-    items.forEach(function(item) {
-      for (let columnName in item) {
-        if (columnNames.indexOf(columnName) === -1) columnNames.push(columnName)
-      }
-    })
-  }
-
-  // initialize column defaults (each column inherits from options.config)
-  let columns = columnNames.reduce((columns, columnName) => {
-    let column = Object.create(options)
-    columns[columnName] = mixin(column, columnConfigs[columnName])
-    return columns
-  }, Object.create(null))
-
-  // sanitize column settings
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.name = columnName
-    column.maxWidth = Math.ceil(column.maxWidth)
-    column.minWidth = Math.ceil(column.minWidth)
-    column.truncate = !!column.truncate
-    column.align = column.align || 'left'
-  })
-
-  // sanitize data
-  items = items.map(item => {
-    let result = Object.create(null)
-    columnNames.forEach(columnName => {
-      // null/undefined -> ''
-      result[columnName] = item[columnName] != null ? item[columnName] : ''
-      // toString everything
-      result[columnName] = '' + result[columnName]
-      if (columns[columnName].preserveNewLines) {
-        // merge non-newline whitespace chars
-        result[columnName] = result[columnName].replace(/[^\S\n]/gmi, ' ')
-      } else {
-        // merge all whitespace chars
-        result[columnName] = result[columnName].replace(/\s/gmi, ' ')
-      }
-    })
-    return result
-  })
-
-  // transform data cells
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let col = Object.create(column)
-      item[columnName] = column.dataTransform(item[columnName], col, index)
-
-      let changedKeys = Object.keys(col)
-      // disable default heading transform if we wrote to column.name
-      if (changedKeys.indexOf('name') !== -1) {
-        if (column.headingTransform !== DEFAULT_HEADING_TRANSFORM) return
-        column.headingTransform = heading => heading
-      }
-      changedKeys.forEach(key => column[key] = col[key])
-      return item
-    })
-  })
-
-  // add headers
-  let headers = {}
-  if(options.showHeaders) {
-    columnNames.forEach(columnName => {
-      let column = columns[columnName]
-
-      if(!column.showHeaders){
-        headers[columnName] = '';
-        return;
+const DEFAULT_OPTIONS = {
+          maxCallsPerWorker           : Infinity
+        , maxConcurrentWorkers        : require('os').cpus().length
+        , maxConcurrentCallsPerWorker : 10
+        , maxConcurrentCalls          : Infinity
+        , maxCallTime                 : Infinity // exceed this and the whole worker is terminated
+        , maxRetries                  : Infinity
+        , forcedKillTime              : 100
+        , autoStart                   : false
       }
 
-      headers[columnName] = column.headingTransform(column.name)
-    })
-    items.unshift(headers)
-  }
-  // get actual max-width between min & max
-  // based on length of data in columns
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items
-    .map(item => item[columnName])
-    .reduce((min, cur) => {
-      // if already at maxWidth don't bother testing
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-    }, 0)
-  })
-
-  // split long words so they can break onto multiple lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map(item => {
-      item[columnName] = splitLongWords(item[columnName], column.width, column.truncateMarker)
-      return item
-    })
-  })
-
-  // wrap long lines. each item is now an array of lines.
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let cell = item[columnName]
-      item[columnName] = splitIntoLines(cell, column.width)
-
-      // if truncating required, only include first line + add truncation char
-      if (column.truncate && item[columnName].length > 1) {
-        item[columnName] = splitIntoLines(cell, column.width - wcwidth(column.truncateMarker))
-        let firstLine = item[columnName][0]
-        if (!endsWith(firstLine, column.truncateMarker)) item[columnName][0] += column.truncateMarker
-        item[columnName] = item[columnName].slice(0, 1)
-      }
-      return item
-    })
-  })
-
-  // recalculate column widths from truncated output/lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items.map(item => {
-      return item[columnName].reduce((min, cur) => {
-        if (min >= column.maxWidth) return min
-        return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-      }, 0)
-    }).reduce((min, cur) => {
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, cur)))
-    }, 0)
-  })
+const extend                  = require('xtend')
+    , fork                    = require('./fork')
+    , TimeoutError            = require('errno').create('TimeoutError')
+    , ProcessTerminatedError  = require('errno').create('ProcessTerminatedError')
+    , MaxConcurrentCallsError = require('errno').create('MaxConcurrentCallsError')
 
 
-  let rows = createRows(items, columns, columnNames, options.paddingChr) // merge lines into rows
-  // conceive output
-  return rows.reduce((output, row) => {
-    return output.concat(row.reduce((rowOut, line) => {
-      return rowOut.concat(line.join(options.columnSplitter))
-    }, []))
-  }, [])
-  .map(line => truncateString(line, maxLineWidth))
-  .join(options.spacing)
+function Farm (options, path) {
+  this.options     = extend(DEFAULT_OPTIONS, options)
+  this.path        = path
+  this.activeCalls = 0
 }
 
-/**
- * Convert wrapped lines into rows with padded values.
- *
- * @param Array items data to process
- * @param Array columns column width settings for wrapping
- * @param Array columnNames column ordering
- * @return Array items wrapped in arrays, corresponding to lines
- */
 
-function createRows(items, columns, columnNames, paddingChr) {
-  return items.map(item => {
-    let row = []
-    let numLines = 0
-    columnNames.forEach(columnName => {
-      numLines = Math.max(numLines, item[columnName].length)
-    })
-    // combine matching lines of each rows
-    for (let i = 0; i < numLines; i++) {
-      row[i] = row[i] || []
-      columnNames.forEach(columnName => {
-        let column = columns[columnName]
-        let val = item[columnName][i] || '' // || '' ensures empty columns get padded
-        if (column.align === 'right') row[i].push(padLeft(val, column.width, paddingChr))
-        else if (column.align === 'center' || column.align === 'centre') row[i].push(padCenter(val, column.width, paddingChr))
-        else row[i].push(padRight(val, column.width, paddingChr))
-      })
+// make a handle to pass back in the form of an external API
+Farm.prototype.mkhandle = function (method) {
+  return function () {
+    let args = Array.prototype.slice.call(arguments)
+    if (this.activeCalls >= this.options.maxConcurrentCalls) {
+      let err = new MaxConcurrentCallsError('Too many concurrent calls (' + this.activeCalls + ')')
+      if (typeof args[args.length - 1] == 'function')
+        return process.nextTick(args[args.length - 1].bind(null, err))
+      throw err
     }
-    return row
-  })
+    this.addCall({
+        method   : method
+      , callback : args.pop()
+      , args     : args
+      , retries  : 0
+    })
+  }.bind(this)
 }
 
-/**
- * Object.assign
- *
- * @return Object Object with properties mixed in.
- */
 
-function mixin(...args) {
-  if (Object.assign) return Object.assign(...args)
-  return ObjectAssign(...args)
+// a constructor of sorts
+Farm.prototype.setup = function (methods) {
+  let iface
+  if (!methods) { // single-function export
+    iface = this.mkhandle()
+  } else { // multiple functions on the export
+    iface = {}
+    methods.forEach(function (m) {
+      iface[m] = this.mkhandle(m)
+    }.bind(this))
+  }
+
+  this.searchStart    = -1
+  this.childId        = -1
+  this.children       = {}
+  this.activeChildren = 0
+  this.callQueue      = []
+
+  if (this.options.autoStart) {
+    while (this.activeChildren < this.options.maxConcurrentWorkers)
+      this.startChild()
+  }
+
+  return iface
 }
 
-function ObjectAssign(target, firstSource) {
-  "use strict";
-  if (target === undefined || target === null)
-    throw new TypeError("Cannot convert first argument to object");
 
-  var to = Object(target);
-
-  var hasPendingException = false;
-  var pendingException;
-
-  for (var i = 1; i < arguments.length; i++) {
-    var nextSource = arguments[i];
-    if (nextSource === undefined || nextSource === null)
-      continue;
-
-    var keysArray = Object.keys(Object(nextSource));
-    for (var nextIndex = 0, len = keysArray.length; nextIndex < len; nextIndex++) {
-      var nextKey = keysArray[nextIndex];
-      try {
-        var desc = Object.getOwnPropertyDescriptor(nextSource, nextKey);
-        if (desc !== undefined && desc.enumerable)
-          to[nextKey] = nextSource[nextKey];
-      } catch (e) {
-        if (!hasPendingException) {
-          hasPendingException = true;
-          pendingException = e;
+// when a child exits, check if there are any outstanding jobs and requeue them
+Farm.prototype.onExit = function (childId) {
+  // delay this to give any sends a chance to finish
+  setTimeout(function () {
+    let doQueue = false
+    if (this.children[childId] && this.children[childId].activeCalls) {
+      this.children[childId].calls.forEach(function (call, i) {
+        if (!call) return
+        else if (call.retries >= this.options.maxRetries) {
+          this.receive({
+              idx   : i
+            , child : childId
+            , args  : [ new ProcessTerminatedError('cancel after ' + call.retries + ' retries!') ]
+          })
+        } else {
+          call.retries++
+          this.callQueue.unshift(call)
+          doQueue = true
         }
-      }
+      }.bind(this))
     }
+    this.stopChild(childId)
+    doQueue && this.processQueue()
+  }.bind(this), 10)
+}
 
-    if (hasPendingException)
-      throw pendingException;
+
+// start a new worker
+Farm.prototype.startChild = function () {
+  this.childId++
+
+  let forked = fork(this.path)
+    , id     = this.childId
+    , c      = {
+          send        : forked.send
+        , child       : forked.child
+        , calls       : []
+        , activeCalls : 0
+        , exitCode    : null
+      }
+
+  forked.child.on('message', this.receive.bind(this))
+  forked.child.once('exit', function (code) {
+    c.exitCode = code
+    this.onExit(id)
+  }.bind(this))
+
+  this.activeChildren++
+  this.children[id] = c
+}
+
+
+// stop a worker, identified by id
+Farm.prototype.stopChild = function (childId) {
+  let child = this.children[childId]
+  if (child) {
+    child.send('die')
+    setTimeout(function () {
+      if (child.exitCode === null)
+        child.child.kill('SIGKILL')
+    }, this.options.forcedKillTime)
+    ;delete this.children[childId]
+    this.activeChildren--
   }
-  return to;
-}
-
-/**
- * Adapted from String.prototype.endsWith polyfill.
- */
-
-function endsWith(target, searchString, position) {
-  position = position || target.length;
-  position = position - searchString.length;
-  let lastIndex = target.lastIndexOf(searchString);
-  return lastIndex !== -1 && lastIndex === position;
 }
 
 
-function toArray(items, columnNames) {
-  if (Array.isArray(items)) return items
-  let rows = []
-  for (let key in items) {
-    let item = {}
-    item[columnNames[0] || 'key'] = key
-    item[columnNames[1] || 'value'] = items[key]
-    rows.push(item)
+// called from a child process, the data contains information needed to
+// look up the child and the original call so we can invoke the callback
+Farm.prototype.receive = function (data) {
+  let idx     = data.idx
+    , childId = data.child
+    , args    = data.args
+    , child   = this.children[childId]
+    , call
+
+  if (!child) {
+    return console.error(
+        'Worker Farm: Received message for unknown child. '
+      + 'This is likely as a result of premature child death, '
+      + 'the operation will have been re-queued.'
+    )
   }
-  return rows
+
+  call = child.calls[idx]
+  if (!call) {
+    return console.error(
+        'Worker Farm: Received message for unknown index for existing child. '
+      + 'This should not happen!'
+    )
+  }
+
+  if (this.options.maxCallTime !== Infinity)
+    clearTimeout(call.timer)
+
+  if (args[0] && args[0].$error == '$error') {
+    let e = args[0]
+    switch (e.type) {
+      case 'TypeError': args[0] = new TypeError(e.message); break
+      case 'RangeError': args[0] = new RangeError(e.message); break
+      case 'EvalError': args[0] = new EvalError(e.message); break
+      case 'ReferenceError': args[0] = new ReferenceError(e.message); break
+      case 'SyntaxError': args[0] = new SyntaxError(e.message); break
+      case 'URIError': args[0] = new URIError(e.message); break
+      default: args[0] = new Error(e.message)
+    }
+    args[0].type = e.type
+    args[0].stack = e.stack
+
+    // Copy any custom properties to pass it on.
+    Object.keys(e).forEach(function(key) {
+      args[0][key] = e[key];
+    });
+  }
+
+  process.nextTick(function () {
+    call.callback.apply(null, args)
+  })
+
+  ;delete child.calls[idx]
+  child.activeCalls--
+  this.activeCalls--
+
+  if (child.calls.length >= this.options.maxCallsPerWorker
+      && !Object.keys(child.calls).length) {
+    // this child has finished its run, kill it
+    this.stopChild(childId)
+  }
+
+  // allow any outstanding calls to be processed
+  this.processQueue()
 }
+
+
+Farm.prototype.childTimeout = function (childId) {
+  let child = this.children[childId]
+    , i
+
+  if (!child)
+    return
+
+  for (i in child.calls) {
+    this.receive({
+        idx   : i
+      , child : childId
+      , args  : [ new TimeoutError('worker call timed out!') ]
+    })
+  }
+  this.stopChild(childId)
+}
+
+
+// send a call to a worker, identified by id
+Farm.prototype.send = function (childId, call) {
+  let child = this.children[childId]
+    , idx   = child.calls.length
+
+  child.calls.push(call)
+  child.activeCalls++
+  this.activeCalls++
+
+  child.send({
+      idx    : idx
+    , child  : childId
+    , method : call.method
+    , args   : call.args
+  })
+
+  if (this.options.maxCallTime !== Infinity) {
+    call.timer =
+      setTimeout(this.childTimeout.bind(this, childId), this.options.maxCallTime)
+  }
+}
+
+
+// a list of active worker ids, in order, but the starting offset is
+// shifted each time this method is called, so we work our way through
+// all workers when handing out jobs
+Farm.prototype.childKeys = function () {
+  let cka = Object.keys(this.children)
+    , cks
+
+  if (this.searchStart >= cka.length - 1)
+    this.searchStart = 0
+  else
+    this.searchStart++
+
+  cks = cka.splice(0, this.searchStart)
+
+  return cka.concat(cks)
+}
+
+
+// Calls are added to a queue, this processes the queue and is called
+// whenever there might be a chance to send more calls to the workers.
+// The various options all impact on when we're able to send calls,
+// they may need to be kept in a queue until a worker is ready.
+Farm.prototype.processQueue = function () {
+  let cka, i = 0, childId
+
+  if (!this.callQueue.length)
+    return this.ending && this.end()
+
+  if (this.activeChildren < this.options.maxConcurrentWorkers)
+    this.startChild()
+
+  for (cka = this.childKeys(); i < cka.length; i++) {
+    childId = +cka[i]
+    if (this.children[childId].activeCalls < this.options.maxConcurrentCallsPerWorker
+        && this.children[childId].calls.length < this.options.maxCallsPerWorker) {
+
+      this.send(childId, this.callQueue.shift())
+      if (!this.callQueue.length)
+        return this.ending && this.end()
+    } /*else {
+      console.log(
+        , this.children[childId].activeCalls < this.options.maxConcurrentCallsPerWorker
+        , this.children[childId].calls.length < this.options.maxCallsPerWorker
+        , this.children[childId].calls.length , this.options.maxCallsPerWorker)
+    }*/
+  }
+
+  if (this.ending)
+    this.end()
+}
+
+
+// add a new call to the call queue, then trigger a process of the queue
+Farm.prototype.addCall = function (call) {
+  if (this.ending)
+    return this.end() // don't add anything new to the queue
+  this.callQueue.push(call)
+  this.processQueue()
+}
+
+
+// kills child workers when they're all done
+Farm.prototype.end = function (callback) {
+  let complete = true
+  if (this.ending === false)
+    return
+  if (callback)
+    this.ending = callback
+  else if (this.ending == null)
+    this.ending = true
+  Object.keys(this.children).forEach(function (child) {
+    if (!this.children[child])
+      return
+    if (!this.children[child].activeCalls)
+      this.stopChild(child)
+    else
+      complete = false
+  }.bind(this))
+
+  if (complete && typeof this.ending == 'function') {
+    process.nextTick(function () {
+      this.ending()
+      this.ending = false
+    }.bind(this))
+  }
+}
+
+
+module.exports              = Farm
+module.exports.TimeoutError = TimeoutError
