@@ -1,297 +1,257 @@
-"use strict"
+'use strict'
 
-const wcwidth = require('./width')
-const {
-  padRight,
-  padCenter,
-  padLeft,
-  splitIntoLines,
-  splitLongWords,
-  truncateString
-} = require('./utils')
+const cacache = require('cacache')
+const fetch = require('node-fetch-npm')
+const pipe = require('mississippi').pipe
+const ssri = require('ssri')
+const through = require('mississippi').through
+const to = require('mississippi').to
+const url = require('url')
+const stream = require('stream')
 
-const DEFAULT_HEADING_TRANSFORM = key => key.toUpperCase()
+const MAX_MEM_SIZE = 5 * 1024 * 1024 // 5MB
 
-const DEFAULT_DATA_TRANSFORM = (cell, column, index) => cell
-
-const DEFAULTS = Object.freeze({
-  maxWidth: Infinity,
-  minWidth: 0,
-  columnSplitter: ' ',
-  truncate: false,
-  truncateMarker: '…',
-  preserveNewLines: false,
-  paddingChr: ' ',
-  showHeaders: true,
-  headingTransform: DEFAULT_HEADING_TRANSFORM,
-  dataTransform: DEFAULT_DATA_TRANSFORM
-})
-
-module.exports = function(items, options = {}) {
-
-  let columnConfigs = options.config || {}
-  delete options.config // remove config so doesn't appear on every column.
-
-  let maxLineWidth = options.maxLineWidth || Infinity
-  if (maxLineWidth === 'auto') maxLineWidth = process.stdout.columns || Infinity
-  delete options.maxLineWidth // this is a line control option, don't pass it to column
-
-  // Option defaults inheritance:
-  // options.config[columnName] => options => DEFAULTS
-  options = mixin({}, DEFAULTS, options)
-
-  options.config = options.config || Object.create(null)
-
-  options.spacing = options.spacing || '\n' // probably useless
-  options.preserveNewLines = !!options.preserveNewLines
-  options.showHeaders = !!options.showHeaders;
-  options.columns = options.columns || options.include // alias include/columns, prefer columns if supplied
-  let columnNames = options.columns || [] // optional user-supplied columns to include
-
-  items = toArray(items, columnNames)
-
-  // if not suppled column names, automatically determine columns from data keys
-  if (!columnNames.length) {
-    items.forEach(function(item) {
-      for (let columnName in item) {
-        if (columnNames.indexOf(columnName) === -1) columnNames.push(columnName)
-      }
+function cacheKey (req) {
+  const parsed = url.parse(req.url)
+  return `make-fetch-happen:request-cache:${
+    url.format({
+      protocol: parsed.protocol,
+      slashes: parsed.slashes,
+      host: parsed.host,
+      hostname: parsed.hostname,
+      pathname: parsed.pathname
     })
-  }
-
-  // initialize column defaults (each column inherits from options.config)
-  let columns = columnNames.reduce((columns, columnName) => {
-    let column = Object.create(options)
-    columns[columnName] = mixin(column, columnConfigs[columnName])
-    return columns
-  }, Object.create(null))
-
-  // sanitize column settings
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.name = columnName
-    column.maxWidth = Math.ceil(column.maxWidth)
-    column.minWidth = Math.ceil(column.minWidth)
-    column.truncate = !!column.truncate
-    column.align = column.align || 'left'
-  })
-
-  // sanitize data
-  items = items.map(item => {
-    let result = Object.create(null)
-    columnNames.forEach(columnName => {
-      // null/undefined -> ''
-      result[columnName] = item[columnName] != null ? item[columnName] : ''
-      // toString everything
-      result[columnName] = '' + result[columnName]
-      if (columns[columnName].preserveNewLines) {
-        // merge non-newline whitespace chars
-        result[columnName] = result[columnName].replace(/[^\S\n]/gmi, ' ')
-      } else {
-        // merge all whitespace chars
-        result[columnName] = result[columnName].replace(/\s/gmi, ' ')
-      }
-    })
-    return result
-  })
-
-  // transform data cells
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let col = Object.create(column)
-      item[columnName] = column.dataTransform(item[columnName], col, index)
-
-      let changedKeys = Object.keys(col)
-      // disable default heading transform if we wrote to column.name
-      if (changedKeys.indexOf('name') !== -1) {
-        if (column.headingTransform !== DEFAULT_HEADING_TRANSFORM) return
-        column.headingTransform = heading => heading
-      }
-      changedKeys.forEach(key => column[key] = col[key])
-      return item
-    })
-  })
-
-  // add headers
-  let headers = {}
-  if(options.showHeaders) {
-    columnNames.forEach(columnName => {
-      let column = columns[columnName]
-
-      if(!column.showHeaders){
-        headers[columnName] = '';
-        return;
-      }
-
-      headers[columnName] = column.headingTransform(column.name)
-    })
-    items.unshift(headers)
-  }
-  // get actual max-width between min & max
-  // based on length of data in columns
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items
-    .map(item => item[columnName])
-    .reduce((min, cur) => {
-      // if already at maxWidth don't bother testing
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-    }, 0)
-  })
-
-  // split long words so they can break onto multiple lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map(item => {
-      item[columnName] = splitLongWords(item[columnName], column.width, column.truncateMarker)
-      return item
-    })
-  })
-
-  // wrap long lines. each item is now an array of lines.
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let cell = item[columnName]
-      item[columnName] = splitIntoLines(cell, column.width)
-
-      // if truncating required, only include first line + add truncation char
-      if (column.truncate && item[columnName].length > 1) {
-        item[columnName] = splitIntoLines(cell, column.width - wcwidth(column.truncateMarker))
-        let firstLine = item[columnName][0]
-        if (!endsWith(firstLine, column.truncateMarker)) item[columnName][0] += column.truncateMarker
-        item[columnName] = item[columnName].slice(0, 1)
-      }
-      return item
-    })
-  })
-
-  // recalculate column widths from truncated output/lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items.map(item => {
-      return item[columnName].reduce((min, cur) => {
-        if (min >= column.maxWidth) return min
-        return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-      }, 0)
-    }).reduce((min, cur) => {
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, cur)))
-    }, 0)
-  })
-
-
-  let rows = createRows(items, columns, columnNames, options.paddingChr) // merge lines into rows
-  // conceive output
-  return rows.reduce((output, row) => {
-    return output.concat(row.reduce((rowOut, line) => {
-      return rowOut.concat(line.join(options.columnSplitter))
-    }, []))
-  }, [])
-  .map(line => truncateString(line, maxLineWidth))
-  .join(options.spacing)
+  }`
 }
 
-/**
- * Convert wrapped lines into rows with padded values.
- *
- * @param Array items data to process
- * @param Array columns column width settings for wrapping
- * @param Array columnNames column ordering
- * @return Array items wrapped in arrays, corresponding to lines
- */
+// This is a cacache-based implementation of the Cache standard,
+// using node-fetch.
+// docs: https://developer.mozilla.org/en-US/docs/Web/API/Cache
+//
+module.exports = class Cache {
+  constructor (path, opts) {
+    this._path = path
+    this._uid = opts && opts.uid
+    this._gid = opts && opts.gid
+    this.Promise = (opts && opts.Promise) || Promise
+  }
 
-function createRows(items, columns, columnNames, paddingChr) {
-  return items.map(item => {
-    let row = []
-    let numLines = 0
-    columnNames.forEach(columnName => {
-      numLines = Math.max(numLines, item[columnName].length)
+  // Returns a Promise that resolves to the response associated with the first
+  // matching request in the Cache object.
+  match (req, opts) {
+    opts = opts || {}
+    const key = cacheKey(req)
+    return cacache.get.info(this._path, key).then(info => {
+      return info && cacache.get.hasContent(
+        this._path, info.integrity, opts
+      ).then(exists => exists && info)
+    }).then(info => {
+      if (info && info.metadata && matchDetails(req, {
+        url: info.metadata.url,
+        reqHeaders: new fetch.Headers(info.metadata.reqHeaders),
+        resHeaders: new fetch.Headers(info.metadata.resHeaders),
+        cacheIntegrity: info.integrity,
+        integrity: opts && opts.integrity
+      })) {
+        const resHeaders = new fetch.Headers(info.metadata.resHeaders)
+        addCacheHeaders(resHeaders, this._path, key, info.integrity, info.time)
+        if (req.method === 'HEAD') {
+          return new fetch.Response(null, {
+            url: req.url,
+            headers: resHeaders,
+            status: 200
+          })
+        }
+        let body
+        const cachePath = this._path
+        // avoid opening cache file handles until a user actually tries to
+        // read from it.
+        if (opts.memoize !== false && info.size > MAX_MEM_SIZE) {
+          body = new stream.PassThrough()
+          const realRead = body._read
+          body._read = function (size) {
+            body._read = realRead
+            pipe(
+              cacache.get.stream.byDigest(cachePath, info.integrity, {
+                memoize: opts.memoize
+              }),
+              body,
+              err => body.emit(err))
+            return realRead.call(this, size)
+          }
+        } else {
+          let readOnce = false
+          // cacache is much faster at bulk reads
+          body = new stream.Readable({
+            read () {
+              if (readOnce) return this.push(null)
+              readOnce = true
+              cacache.get.byDigest(cachePath, info.integrity, {
+                memoize: opts.memoize
+              }).then(data => {
+                this.push(data)
+                this.push(null)
+              }, err => this.emit('error', err))
+            }
+          })
+        }
+        return this.Promise.resolve(new fetch.Response(body, {
+          url: req.url,
+          headers: resHeaders,
+          status: 200,
+          size: info.size
+        }))
+      }
     })
-    // combine matching lines of each rows
-    for (let i = 0; i < numLines; i++) {
-      row[i] = row[i] || []
-      columnNames.forEach(columnName => {
-        let column = columns[columnName]
-        let val = item[columnName][i] || '' // || '' ensures empty columns get padded
-        if (column.align === 'right') row[i].push(padLeft(val, column.width, paddingChr))
-        else if (column.align === 'center' || column.align === 'centre') row[i].push(padCenter(val, column.width, paddingChr))
-        else row[i].push(padRight(val, column.width, paddingChr))
-      })
+  }
+
+  // Takes both a request and its response and adds it to the given cache.
+  put (req, response, opts) {
+    opts = opts || {}
+    const size = response.headers.get('content-length')
+    const fitInMemory = !!size && opts.memoize !== false && size < MAX_MEM_SIZE
+    const ckey = cacheKey(req)
+    const cacheOpts = {
+      algorithms: opts.algorithms,
+      metadata: {
+        url: req.url,
+        reqHeaders: req.headers.raw(),
+        resHeaders: response.headers.raw()
+      },
+      uid: this._uid,
+      gid: this._gid,
+      size,
+      memoize: fitInMemory && opts.memoize
     }
-    return row
-  })
-}
-
-/**
- * Object.assign
- *
- * @return Object Object with properties mixed in.
- */
-
-function mixin(...args) {
-  if (Object.assign) return Object.assign(...args)
-  return ObjectAssign(...args)
-}
-
-function ObjectAssign(target, firstSource) {
-  "use strict";
-  if (target === undefined || target === null)
-    throw new TypeError("Cannot convert first argument to object");
-
-  var to = Object(target);
-
-  var hasPendingException = false;
-  var pendingException;
-
-  for (var i = 1; i < arguments.length; i++) {
-    var nextSource = arguments[i];
-    if (nextSource === undefined || nextSource === null)
-      continue;
-
-    var keysArray = Object.keys(Object(nextSource));
-    for (var nextIndex = 0, len = keysArray.length; nextIndex < len; nextIndex++) {
-      var nextKey = keysArray[nextIndex];
-      try {
-        var desc = Object.getOwnPropertyDescriptor(nextSource, nextKey);
-        if (desc !== undefined && desc.enumerable)
-          to[nextKey] = nextSource[nextKey];
-      } catch (e) {
-        if (!hasPendingException) {
-          hasPendingException = true;
-          pendingException = e;
+    if (req.method === 'HEAD' || response.status === 304) {
+      // Update metadata without writing
+      return cacache.get.info(this._path, ckey).then(info => {
+        // Providing these will bypass content write
+        cacheOpts.integrity = info.integrity
+        addCacheHeaders(
+          response.headers, this._path, ckey, info.integrity, info.time
+        )
+        return new this.Promise((resolve, reject) => {
+          pipe(
+            cacache.get.stream.byDigest(this._path, info.integrity, cacheOpts),
+            cacache.put.stream(this._path, cacheKey(req), cacheOpts),
+            err => err ? reject(err) : resolve(response)
+          )
+        })
+      }).then(() => response)
+    }
+    let buf = []
+    let bufSize = 0
+    let cacheTargetStream = false
+    const cachePath = this._path
+    let cacheStream = to((chunk, enc, cb) => {
+      if (!cacheTargetStream) {
+        if (fitInMemory) {
+          cacheTargetStream =
+          to({highWaterMark: MAX_MEM_SIZE}, (chunk, enc, cb) => {
+            buf.push(chunk)
+            bufSize += chunk.length
+            cb()
+          }, done => {
+            cacache.put(
+              cachePath,
+              cacheKey(req),
+              Buffer.concat(buf, bufSize),
+              cacheOpts
+            ).then(
+              () => done(),
+              done
+            )
+          })
+        } else {
+          cacheTargetStream =
+          cacache.put.stream(cachePath, cacheKey(req), cacheOpts)
         }
       }
+      cacheTargetStream.write(chunk, enc, cb)
+    }, done => {
+      cacheTargetStream ? cacheTargetStream.end(done) : done()
+    })
+    const oldBody = response.body
+    const newBody = through({highWaterMark: fitInMemory && MAX_MEM_SIZE})
+    response.body = newBody
+    oldBody.once('error', err => newBody.emit('error', err))
+    newBody.once('error', err => oldBody.emit('error', err))
+    cacheStream.once('error', err => newBody.emit('error', err))
+    pipe(oldBody, to((chunk, enc, cb) => {
+      cacheStream.write(chunk, enc, () => {
+        newBody.write(chunk, enc, cb)
+      })
+    }, done => {
+      cacheStream.end(() => {
+        newBody.end(() => {
+          done()
+        })
+      })
+    }), err => err && newBody.emit('error', err))
+    return response
+  }
+
+  // Finds the Cache entry whose key is the request, and if found, deletes the
+  // Cache entry and returns a Promise that resolves to true. If no Cache entry
+  // is found, it returns false.
+  'delete' (req, opts) {
+    opts = opts || {}
+    if (typeof opts.memoize === 'object') {
+      if (opts.memoize.reset) {
+        opts.memoize.reset()
+      } else if (opts.memoize.clear) {
+        opts.memoize.clear()
+      } else {
+        Object.keys(opts.memoize).forEach(k => {
+          opts.memoize[k] = null
+        })
+      }
     }
-
-    if (hasPendingException)
-      throw pendingException;
+    return cacache.rm.entry(
+      this._path,
+      cacheKey(req)
+    // TODO - true/false
+    ).then(() => false)
   }
-  return to;
 }
 
-/**
- * Adapted from String.prototype.endsWith polyfill.
- */
-
-function endsWith(target, searchString, position) {
-  position = position || target.length;
-  position = position - searchString.length;
-  let lastIndex = target.lastIndexOf(searchString);
-  return lastIndex !== -1 && lastIndex === position;
+function matchDetails (req, cached) {
+  const reqUrl = url.parse(req.url)
+  const cacheUrl = url.parse(cached.url)
+  const vary = cached.resHeaders.get('Vary')
+  // https://tools.ietf.org/html/rfc7234#section-4.1
+  if (vary) {
+    if (vary.match(/\*/)) {
+      return false
+    } else {
+      const fieldsMatch = vary.split(/\s*,\s*/).every(field => {
+        return cached.reqHeaders.get(field) === req.headers.get(field)
+      })
+      if (!fieldsMatch) {
+        return false
+      }
+    }
+  }
+  if (cached.integrity) {
+    const cachedSri = ssri.parse(cached.cacheIntegrity)
+    const sri = ssri.parse(cached.integrity)
+    const algo = sri.pickAlgorithm()
+    if (cachedSri[algo] && !sri[algo].some(hash => {
+      // cachedSri always has exactly one item per algorithm
+      return cachedSri[algo][0].digest === hash.digest
+    })) {
+      return false
+    }
+  }
+  reqUrl.hash = null
+  cacheUrl.hash = null
+  return url.format(reqUrl) === url.format(cacheUrl)
 }
 
-
-function toArray(items, columnNames) {
-  if (Array.isArray(items)) return items
-  let rows = []
-  for (let key in items) {
-    let item = {}
-    item[columnNames[0] || 'key'] = key
-    item[columnNames[1] || 'value'] = items[key]
-    rows.push(item)
-  }
-  return rows
+function addCacheHeaders (resHeaders, path, key, hash, time) {
+  resHeaders.set('X-Local-Cache', encodeURIComponent(path))
+  resHeaders.set('X-Local-Cache-Key', encodeURIComponent(key))
+  resHeaders.set('X-Local-Cache-Hash', encodeURIComponent(hash))
+  resHeaders.set('X-Local-Cache-Time', new Date(time).toUTCString())
 }
