@@ -1,297 +1,92 @@
-"use strict"
+'use strict'
+// Tar can encode large and negative numbers using a leading byte of
+// 0xff for negative, and 0x80 for positive.  The trailing byte in the
+// section will always be 0x20, or in some implementations 0x00.
+// this module encodes and decodes these things.
 
-const wcwidth = require('./width')
-const {
-  padRight,
-  padCenter,
-  padLeft,
-  splitIntoLines,
-  splitLongWords,
-  truncateString
-} = require('./utils')
-
-const DEFAULT_HEADING_TRANSFORM = key => key.toUpperCase()
-
-const DEFAULT_DATA_TRANSFORM = (cell, column, index) => cell
-
-const DEFAULTS = Object.freeze({
-  maxWidth: Infinity,
-  minWidth: 0,
-  columnSplitter: ' ',
-  truncate: false,
-  truncateMarker: '…',
-  preserveNewLines: false,
-  paddingChr: ' ',
-  showHeaders: true,
-  headingTransform: DEFAULT_HEADING_TRANSFORM,
-  dataTransform: DEFAULT_DATA_TRANSFORM
-})
-
-module.exports = function(items, options = {}) {
-
-  let columnConfigs = options.config || {}
-  delete options.config // remove config so doesn't appear on every column.
-
-  let maxLineWidth = options.maxLineWidth || Infinity
-  if (maxLineWidth === 'auto') maxLineWidth = process.stdout.columns || Infinity
-  delete options.maxLineWidth // this is a line control option, don't pass it to column
-
-  // Option defaults inheritance:
-  // options.config[columnName] => options => DEFAULTS
-  options = mixin({}, DEFAULTS, options)
-
-  options.config = options.config || Object.create(null)
-
-  options.spacing = options.spacing || '\n' // probably useless
-  options.preserveNewLines = !!options.preserveNewLines
-  options.showHeaders = !!options.showHeaders;
-  options.columns = options.columns || options.include // alias include/columns, prefer columns if supplied
-  let columnNames = options.columns || [] // optional user-supplied columns to include
-
-  items = toArray(items, columnNames)
-
-  // if not suppled column names, automatically determine columns from data keys
-  if (!columnNames.length) {
-    items.forEach(function(item) {
-      for (let columnName in item) {
-        if (columnNames.indexOf(columnName) === -1) columnNames.push(columnName)
-      }
-    })
-  }
-
-  // initialize column defaults (each column inherits from options.config)
-  let columns = columnNames.reduce((columns, columnName) => {
-    let column = Object.create(options)
-    columns[columnName] = mixin(column, columnConfigs[columnName])
-    return columns
-  }, Object.create(null))
-
-  // sanitize column settings
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.name = columnName
-    column.maxWidth = Math.ceil(column.maxWidth)
-    column.minWidth = Math.ceil(column.minWidth)
-    column.truncate = !!column.truncate
-    column.align = column.align || 'left'
-  })
-
-  // sanitize data
-  items = items.map(item => {
-    let result = Object.create(null)
-    columnNames.forEach(columnName => {
-      // null/undefined -> ''
-      result[columnName] = item[columnName] != null ? item[columnName] : ''
-      // toString everything
-      result[columnName] = '' + result[columnName]
-      if (columns[columnName].preserveNewLines) {
-        // merge non-newline whitespace chars
-        result[columnName] = result[columnName].replace(/[^\S\n]/gmi, ' ')
-      } else {
-        // merge all whitespace chars
-        result[columnName] = result[columnName].replace(/\s/gmi, ' ')
-      }
-    })
-    return result
-  })
-
-  // transform data cells
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let col = Object.create(column)
-      item[columnName] = column.dataTransform(item[columnName], col, index)
-
-      let changedKeys = Object.keys(col)
-      // disable default heading transform if we wrote to column.name
-      if (changedKeys.indexOf('name') !== -1) {
-        if (column.headingTransform !== DEFAULT_HEADING_TRANSFORM) return
-        column.headingTransform = heading => heading
-      }
-      changedKeys.forEach(key => column[key] = col[key])
-      return item
-    })
-  })
-
-  // add headers
-  let headers = {}
-  if(options.showHeaders) {
-    columnNames.forEach(columnName => {
-      let column = columns[columnName]
-
-      if(!column.showHeaders){
-        headers[columnName] = '';
-        return;
-      }
-
-      headers[columnName] = column.headingTransform(column.name)
-    })
-    items.unshift(headers)
-  }
-  // get actual max-width between min & max
-  // based on length of data in columns
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items
-    .map(item => item[columnName])
-    .reduce((min, cur) => {
-      // if already at maxWidth don't bother testing
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-    }, 0)
-  })
-
-  // split long words so they can break onto multiple lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map(item => {
-      item[columnName] = splitLongWords(item[columnName], column.width, column.truncateMarker)
-      return item
-    })
-  })
-
-  // wrap long lines. each item is now an array of lines.
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let cell = item[columnName]
-      item[columnName] = splitIntoLines(cell, column.width)
-
-      // if truncating required, only include first line + add truncation char
-      if (column.truncate && item[columnName].length > 1) {
-        item[columnName] = splitIntoLines(cell, column.width - wcwidth(column.truncateMarker))
-        let firstLine = item[columnName][0]
-        if (!endsWith(firstLine, column.truncateMarker)) item[columnName][0] += column.truncateMarker
-        item[columnName] = item[columnName].slice(0, 1)
-      }
-      return item
-    })
-  })
-
-  // recalculate column widths from truncated output/lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items.map(item => {
-      return item[columnName].reduce((min, cur) => {
-        if (min >= column.maxWidth) return min
-        return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-      }, 0)
-    }).reduce((min, cur) => {
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, cur)))
-    }, 0)
-  })
-
-
-  let rows = createRows(items, columns, columnNames, options.paddingChr) // merge lines into rows
-  // conceive output
-  return rows.reduce((output, row) => {
-    return output.concat(row.reduce((rowOut, line) => {
-      return rowOut.concat(line.join(options.columnSplitter))
-    }, []))
-  }, [])
-  .map(line => truncateString(line, maxLineWidth))
-  .join(options.spacing)
+const encode = exports.encode = (num, buf) => {
+  buf[buf.length - 1] = 0x20
+  if (num < 0)
+    encodeNegative(num, buf)
+  else
+    encodePositive(num, buf)
+  return buf
 }
 
-/**
- * Convert wrapped lines into rows with padded values.
- *
- * @param Array items data to process
- * @param Array columns column width settings for wrapping
- * @param Array columnNames column ordering
- * @return Array items wrapped in arrays, corresponding to lines
- */
-
-function createRows(items, columns, columnNames, paddingChr) {
-  return items.map(item => {
-    let row = []
-    let numLines = 0
-    columnNames.forEach(columnName => {
-      numLines = Math.max(numLines, item[columnName].length)
-    })
-    // combine matching lines of each rows
-    for (let i = 0; i < numLines; i++) {
-      row[i] = row[i] || []
-      columnNames.forEach(columnName => {
-        let column = columns[columnName]
-        let val = item[columnName][i] || '' // || '' ensures empty columns get padded
-        if (column.align === 'right') row[i].push(padLeft(val, column.width, paddingChr))
-        else if (column.align === 'center' || column.align === 'centre') row[i].push(padCenter(val, column.width, paddingChr))
-        else row[i].push(padRight(val, column.width, paddingChr))
-      })
+const encodePositive = (num, buf) => {
+  buf[0] = 0x80
+  for (var i = buf.length - 2; i > 0; i--) {
+    if (num === 0)
+      buf[i] = 0
+    else {
+      buf[i] = num % 0x100
+      num = Math.floor(num / 0x100)
     }
-    return row
-  })
+  }
 }
 
-/**
- * Object.assign
- *
- * @return Object Object with properties mixed in.
- */
-
-function mixin(...args) {
-  if (Object.assign) return Object.assign(...args)
-  return ObjectAssign(...args)
-}
-
-function ObjectAssign(target, firstSource) {
-  "use strict";
-  if (target === undefined || target === null)
-    throw new TypeError("Cannot convert first argument to object");
-
-  var to = Object(target);
-
-  var hasPendingException = false;
-  var pendingException;
-
-  for (var i = 1; i < arguments.length; i++) {
-    var nextSource = arguments[i];
-    if (nextSource === undefined || nextSource === null)
-      continue;
-
-    var keysArray = Object.keys(Object(nextSource));
-    for (var nextIndex = 0, len = keysArray.length; nextIndex < len; nextIndex++) {
-      var nextKey = keysArray[nextIndex];
-      try {
-        var desc = Object.getOwnPropertyDescriptor(nextSource, nextKey);
-        if (desc !== undefined && desc.enumerable)
-          to[nextKey] = nextSource[nextKey];
-      } catch (e) {
-        if (!hasPendingException) {
-          hasPendingException = true;
-          pendingException = e;
-        }
-      }
+const encodeNegative = (num, buf) => {
+  buf[0] = 0xff
+  var flipped = false
+  num = num * -1
+  for (var i = buf.length - 2; i > 0; i--) {
+    var byte
+    if (num === 0)
+      byte = 0
+    else {
+      byte = num % 0x100
+      num = Math.floor(num / 0x100)
     }
-
-    if (hasPendingException)
-      throw pendingException;
+    if (flipped)
+      buf[i] = onesComp(byte)
+    else if (byte === 0)
+      buf[i] = 0
+    else {
+      flipped = true
+      buf[i] = twosComp(byte)
+    }
   }
-  return to;
 }
 
-/**
- * Adapted from String.prototype.endsWith polyfill.
- */
-
-function endsWith(target, searchString, position) {
-  position = position || target.length;
-  position = position - searchString.length;
-  let lastIndex = target.lastIndexOf(searchString);
-  return lastIndex !== -1 && lastIndex === position;
+const parse = exports.parse = (buf) => {
+  var post = buf[buf.length - 1]
+  var pre = buf[0]
+  return pre === 0x80 ? pos(buf.slice(1, buf.length - 1))
+   : twos(buf.slice(1, buf.length - 1))
 }
 
-
-function toArray(items, columnNames) {
-  if (Array.isArray(items)) return items
-  let rows = []
-  for (let key in items) {
-    let item = {}
-    item[columnNames[0] || 'key'] = key
-    item[columnNames[1] || 'value'] = items[key]
-    rows.push(item)
+const twos = (buf) => {
+  var len = buf.length
+  var sum = 0
+  var flipped = false
+  for (var i = len - 1; i > -1; i--) {
+    var byte = buf[i]
+    var f
+    if (flipped)
+      f = onesComp(byte)
+    else if (byte === 0)
+      f = byte
+    else {
+      flipped = true
+      f = twosComp(byte)
+    }
+    if (f !== 0)
+      sum += f * Math.pow(256, len - i - 1)
   }
-  return rows
+  return sum * -1
 }
+
+const pos = (buf) => {
+  var len = buf.length
+  var sum = 0
+  for (var i = len - 1; i > -1; i--) {
+    var byte = buf[i]
+    if (byte !== 0)
+      sum += byte * Math.pow(256, len - i - 1)
+  }
+  return sum
+}
+
+const onesComp = byte => (0xff ^ byte) & 0xff
+
+const twosComp = byte => ((0xff ^ byte) + 1) & 0xff
