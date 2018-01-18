@@ -1,50 +1,433 @@
-module.exports = [
-    [ 0x0300, 0x036F ], [ 0x0483, 0x0486 ], [ 0x0488, 0x0489 ],
-    [ 0x0591, 0x05BD ], [ 0x05BF, 0x05BF ], [ 0x05C1, 0x05C2 ],
-    [ 0x05C4, 0x05C5 ], [ 0x05C7, 0x05C7 ], [ 0x0600, 0x0603 ],
-    [ 0x0610, 0x0615 ], [ 0x064B, 0x065E ], [ 0x0670, 0x0670 ],
-    [ 0x06D6, 0x06E4 ], [ 0x06E7, 0x06E8 ], [ 0x06EA, 0x06ED ],
-    [ 0x070F, 0x070F ], [ 0x0711, 0x0711 ], [ 0x0730, 0x074A ],
-    [ 0x07A6, 0x07B0 ], [ 0x07EB, 0x07F3 ], [ 0x0901, 0x0902 ],
-    [ 0x093C, 0x093C ], [ 0x0941, 0x0948 ], [ 0x094D, 0x094D ],
-    [ 0x0951, 0x0954 ], [ 0x0962, 0x0963 ], [ 0x0981, 0x0981 ],
-    [ 0x09BC, 0x09BC ], [ 0x09C1, 0x09C4 ], [ 0x09CD, 0x09CD ],
-    [ 0x09E2, 0x09E3 ], [ 0x0A01, 0x0A02 ], [ 0x0A3C, 0x0A3C ],
-    [ 0x0A41, 0x0A42 ], [ 0x0A47, 0x0A48 ], [ 0x0A4B, 0x0A4D ],
-    [ 0x0A70, 0x0A71 ], [ 0x0A81, 0x0A82 ], [ 0x0ABC, 0x0ABC ],
-    [ 0x0AC1, 0x0AC5 ], [ 0x0AC7, 0x0AC8 ], [ 0x0ACD, 0x0ACD ],
-    [ 0x0AE2, 0x0AE3 ], [ 0x0B01, 0x0B01 ], [ 0x0B3C, 0x0B3C ],
-    [ 0x0B3F, 0x0B3F ], [ 0x0B41, 0x0B43 ], [ 0x0B4D, 0x0B4D ],
-    [ 0x0B56, 0x0B56 ], [ 0x0B82, 0x0B82 ], [ 0x0BC0, 0x0BC0 ],
-    [ 0x0BCD, 0x0BCD ], [ 0x0C3E, 0x0C40 ], [ 0x0C46, 0x0C48 ],
-    [ 0x0C4A, 0x0C4D ], [ 0x0C55, 0x0C56 ], [ 0x0CBC, 0x0CBC ],
-    [ 0x0CBF, 0x0CBF ], [ 0x0CC6, 0x0CC6 ], [ 0x0CCC, 0x0CCD ],
-    [ 0x0CE2, 0x0CE3 ], [ 0x0D41, 0x0D43 ], [ 0x0D4D, 0x0D4D ],
-    [ 0x0DCA, 0x0DCA ], [ 0x0DD2, 0x0DD4 ], [ 0x0DD6, 0x0DD6 ],
-    [ 0x0E31, 0x0E31 ], [ 0x0E34, 0x0E3A ], [ 0x0E47, 0x0E4E ],
-    [ 0x0EB1, 0x0EB1 ], [ 0x0EB4, 0x0EB9 ], [ 0x0EBB, 0x0EBC ],
-    [ 0x0EC8, 0x0ECD ], [ 0x0F18, 0x0F19 ], [ 0x0F35, 0x0F35 ],
-    [ 0x0F37, 0x0F37 ], [ 0x0F39, 0x0F39 ], [ 0x0F71, 0x0F7E ],
-    [ 0x0F80, 0x0F84 ], [ 0x0F86, 0x0F87 ], [ 0x0F90, 0x0F97 ],
-    [ 0x0F99, 0x0FBC ], [ 0x0FC6, 0x0FC6 ], [ 0x102D, 0x1030 ],
-    [ 0x1032, 0x1032 ], [ 0x1036, 0x1037 ], [ 0x1039, 0x1039 ],
-    [ 0x1058, 0x1059 ], [ 0x1160, 0x11FF ], [ 0x135F, 0x135F ],
-    [ 0x1712, 0x1714 ], [ 0x1732, 0x1734 ], [ 0x1752, 0x1753 ],
-    [ 0x1772, 0x1773 ], [ 0x17B4, 0x17B5 ], [ 0x17B7, 0x17BD ],
-    [ 0x17C6, 0x17C6 ], [ 0x17C9, 0x17D3 ], [ 0x17DD, 0x17DD ],
-    [ 0x180B, 0x180D ], [ 0x18A9, 0x18A9 ], [ 0x1920, 0x1922 ],
-    [ 0x1927, 0x1928 ], [ 0x1932, 0x1932 ], [ 0x1939, 0x193B ],
-    [ 0x1A17, 0x1A18 ], [ 0x1B00, 0x1B03 ], [ 0x1B34, 0x1B34 ],
-    [ 0x1B36, 0x1B3A ], [ 0x1B3C, 0x1B3C ], [ 0x1B42, 0x1B42 ],
-    [ 0x1B6B, 0x1B73 ], [ 0x1DC0, 0x1DCA ], [ 0x1DFE, 0x1DFF ],
-    [ 0x200B, 0x200F ], [ 0x202A, 0x202E ], [ 0x2060, 0x2063 ],
-    [ 0x206A, 0x206F ], [ 0x20D0, 0x20EF ], [ 0x302A, 0x302F ],
-    [ 0x3099, 0x309A ], [ 0xA806, 0xA806 ], [ 0xA80B, 0xA80B ],
-    [ 0xA825, 0xA826 ], [ 0xFB1E, 0xFB1E ], [ 0xFE00, 0xFE0F ],
-    [ 0xFE20, 0xFE23 ], [ 0xFEFF, 0xFEFF ], [ 0xFFF9, 0xFFFB ],
-    [ 0x10A01, 0x10A03 ], [ 0x10A05, 0x10A06 ], [ 0x10A0C, 0x10A0F ],
-    [ 0x10A38, 0x10A3A ], [ 0x10A3F, 0x10A3F ], [ 0x1D167, 0x1D169 ],
-    [ 0x1D173, 0x1D182 ], [ 0x1D185, 0x1D18B ], [ 0x1D1AA, 0x1D1AD ],
-    [ 0x1D242, 0x1D244 ], [ 0xE0001, 0xE0001 ], [ 0xE0020, 0xE007F ],
-    [ 0xE0100, 0xE01EF ]
-]
+'use strict';
+
+// Load modules
+
+const Hoek = require('hoek');
+
+
+// Declare internals
+
+const internals = {
+    STATUS_CODES: Object.setPrototypeOf({
+        '100': 'Continue',
+        '101': 'Switching Protocols',
+        '102': 'Processing',
+        '200': 'OK',
+        '201': 'Created',
+        '202': 'Accepted',
+        '203': 'Non-Authoritative Information',
+        '204': 'No Content',
+        '205': 'Reset Content',
+        '206': 'Partial Content',
+        '207': 'Multi-Status',
+        '300': 'Multiple Choices',
+        '301': 'Moved Permanently',
+        '302': 'Moved Temporarily',
+        '303': 'See Other',
+        '304': 'Not Modified',
+        '305': 'Use Proxy',
+        '307': 'Temporary Redirect',
+        '400': 'Bad Request',
+        '401': 'Unauthorized',
+        '402': 'Payment Required',
+        '403': 'Forbidden',
+        '404': 'Not Found',
+        '405': 'Method Not Allowed',
+        '406': 'Not Acceptable',
+        '407': 'Proxy Authentication Required',
+        '408': 'Request Time-out',
+        '409': 'Conflict',
+        '410': 'Gone',
+        '411': 'Length Required',
+        '412': 'Precondition Failed',
+        '413': 'Request Entity Too Large',
+        '414': 'Request-URI Too Large',
+        '415': 'Unsupported Media Type',
+        '416': 'Requested Range Not Satisfiable',
+        '417': 'Expectation Failed',
+        '418': 'I\'m a teapot',
+        '422': 'Unprocessable Entity',
+        '423': 'Locked',
+        '424': 'Failed Dependency',
+        '425': 'Unordered Collection',
+        '426': 'Upgrade Required',
+        '428': 'Precondition Required',
+        '429': 'Too Many Requests',
+        '431': 'Request Header Fields Too Large',
+        '451': 'Unavailable For Legal Reasons',
+        '500': 'Internal Server Error',
+        '501': 'Not Implemented',
+        '502': 'Bad Gateway',
+        '503': 'Service Unavailable',
+        '504': 'Gateway Time-out',
+        '505': 'HTTP Version Not Supported',
+        '506': 'Variant Also Negotiates',
+        '507': 'Insufficient Storage',
+        '509': 'Bandwidth Limit Exceeded',
+        '510': 'Not Extended',
+        '511': 'Network Authentication Required'
+    }, null)
+};
+
+
+exports.wrap = function (error, statusCode, message) {
+
+    Hoek.assert(error instanceof Error, 'Cannot wrap non-Error object');
+    Hoek.assert(!error.isBoom || (!statusCode && !message), 'Cannot provide statusCode or message with boom error');
+
+    return (error.isBoom ? error : internals.initialize(error, statusCode || 500, message));
+};
+
+
+exports.create = function (statusCode, message, data) {
+
+    return internals.create(statusCode, message, data, exports.create);
+};
+
+
+internals.create = function (statusCode, message, data, ctor) {
+
+    if (message instanceof Error) {
+        if (data) {
+            message.data = data;
+        }
+        return exports.wrap(message, statusCode);
+    }
+
+    const error = new Error(message ? message : undefined);       // Avoids settings null message
+    Error.captureStackTrace(error, ctor);                       // Filter the stack to our external API
+    error.data = data || null;
+    internals.initialize(error, statusCode);
+    return error;
+};
+
+
+internals.initialize = function (error, statusCode, message) {
+
+    const numberCode = parseInt(statusCode, 10);
+    Hoek.assert(!isNaN(numberCode) && numberCode >= 400, 'First argument must be a number (400+):', statusCode);
+
+    error.isBoom = true;
+    error.isServer = numberCode >= 500;
+
+    if (!error.hasOwnProperty('data')) {
+        error.data = null;
+    }
+
+    error.output = {
+        statusCode: numberCode,
+        payload: {},
+        headers: {}
+    };
+
+    error.reformat = internals.reformat;
+    error.reformat();
+
+    if (!message &&
+        !error.message) {
+
+        message = error.output.payload.error;
+    }
+
+    if (message) {
+        error.message = (message + (error.message ? ': ' + error.message : ''));
+    }
+
+    return error;
+};
+
+
+internals.reformat = function () {
+
+    this.output.payload.statusCode = this.output.statusCode;
+    this.output.payload.error = internals.STATUS_CODES[this.output.statusCode] || 'Unknown';
+
+    if (this.output.statusCode === 500) {
+        this.output.payload.message = 'An internal server error occurred';              // Hide actual error from user
+    }
+    else if (this.message) {
+        this.output.payload.message = this.message;
+    }
+};
+
+
+// 4xx Client Errors
+
+exports.badRequest = function (message, data) {
+
+    return internals.create(400, message, data, exports.badRequest);
+};
+
+
+exports.unauthorized = function (message, scheme, attributes) {          // Or function (message, wwwAuthenticate[])
+
+    const err = internals.create(401, message, undefined, exports.unauthorized);
+
+    if (!scheme) {
+        return err;
+    }
+
+    let wwwAuthenticate = '';
+
+    if (typeof scheme === 'string') {
+
+        // function (message, scheme, attributes)
+
+        wwwAuthenticate = scheme;
+
+        if (attributes || message) {
+            err.output.payload.attributes = {};
+        }
+
+        if (attributes) {
+            if (typeof attributes === 'string') {
+                wwwAuthenticate = wwwAuthenticate + ' ' + Hoek.escapeHeaderAttribute(attributes);
+                err.output.payload.attributes = attributes;
+            }
+            else {
+                const names = Object.keys(attributes);
+                for (let i = 0; i < names.length; ++i) {
+                    const name = names[i];
+                    if (i) {
+                        wwwAuthenticate = wwwAuthenticate + ',';
+                    }
+
+                    let value = attributes[name];
+                    if (value === null ||
+                        value === undefined) {              // Value can be zero
+
+                        value = '';
+                    }
+                    wwwAuthenticate = wwwAuthenticate + ' ' + name + '="' + Hoek.escapeHeaderAttribute(value.toString()) + '"';
+                    err.output.payload.attributes[name] = value;
+                }
+            }
+        }
+
+
+        if (message) {
+            if (attributes) {
+                wwwAuthenticate = wwwAuthenticate + ',';
+            }
+            wwwAuthenticate = wwwAuthenticate + ' error="' + Hoek.escapeHeaderAttribute(message) + '"';
+            err.output.payload.attributes.error = message;
+        }
+        else {
+            err.isMissing = true;
+        }
+    }
+    else {
+
+        // function (message, wwwAuthenticate[])
+
+        const wwwArray = scheme;
+        for (let i = 0; i < wwwArray.length; ++i) {
+            if (i) {
+                wwwAuthenticate = wwwAuthenticate + ', ';
+            }
+
+            wwwAuthenticate = wwwAuthenticate + wwwArray[i];
+        }
+    }
+
+    err.output.headers['WWW-Authenticate'] = wwwAuthenticate;
+
+    return err;
+};
+
+
+exports.paymentRequired = function (message, data) {
+
+    return internals.create(402, message, data, exports.paymentRequired);
+};
+
+
+exports.forbidden = function (message, data) {
+
+    return internals.create(403, message, data, exports.forbidden);
+};
+
+
+exports.notFound = function (message, data) {
+
+    return internals.create(404, message, data, exports.notFound);
+};
+
+
+exports.methodNotAllowed = function (message, data, allow) {
+
+    const err = internals.create(405, message, data, exports.methodNotAllowed);
+
+    if (typeof allow === 'string') {
+        allow = [allow];
+    }
+
+    if (Array.isArray(allow)) {
+        err.output.headers.Allow = allow.join(', ');
+    }
+
+    return err;
+};
+
+
+exports.notAcceptable = function (message, data) {
+
+    return internals.create(406, message, data, exports.notAcceptable);
+};
+
+
+exports.proxyAuthRequired = function (message, data) {
+
+    return internals.create(407, message, data, exports.proxyAuthRequired);
+};
+
+
+exports.clientTimeout = function (message, data) {
+
+    return internals.create(408, message, data, exports.clientTimeout);
+};
+
+
+exports.conflict = function (message, data) {
+
+    return internals.create(409, message, data, exports.conflict);
+};
+
+
+exports.resourceGone = function (message, data) {
+
+    return internals.create(410, message, data, exports.resourceGone);
+};
+
+
+exports.lengthRequired = function (message, data) {
+
+    return internals.create(411, message, data, exports.lengthRequired);
+};
+
+
+exports.preconditionFailed = function (message, data) {
+
+    return internals.create(412, message, data, exports.preconditionFailed);
+};
+
+
+exports.entityTooLarge = function (message, data) {
+
+    return internals.create(413, message, data, exports.entityTooLarge);
+};
+
+
+exports.uriTooLong = function (message, data) {
+
+    return internals.create(414, message, data, exports.uriTooLong);
+};
+
+
+exports.unsupportedMediaType = function (message, data) {
+
+    return internals.create(415, message, data, exports.unsupportedMediaType);
+};
+
+
+exports.rangeNotSatisfiable = function (message, data) {
+
+    return internals.create(416, message, data, exports.rangeNotSatisfiable);
+};
+
+
+exports.expectationFailed = function (message, data) {
+
+    return internals.create(417, message, data, exports.expectationFailed);
+};
+
+
+exports.teapot = function (message, data) {
+
+    return internals.create(418, message, data, exports.teapot);
+};
+
+
+exports.badData = function (message, data) {
+
+    return internals.create(422, message, data, exports.badData);
+};
+
+
+exports.locked = function (message, data) {
+
+    return internals.create(423, message, data, exports.locked);
+};
+
+
+exports.preconditionRequired = function (message, data) {
+
+    return internals.create(428, message, data, exports.preconditionRequired);
+};
+
+
+exports.tooManyRequests = function (message, data) {
+
+    return internals.create(429, message, data, exports.tooManyRequests);
+};
+
+
+exports.illegal = function (message, data) {
+
+    return internals.create(451, message, data, exports.illegal);
+};
+
+
+// 5xx Server Errors
+
+exports.internal = function (message, data, statusCode) {
+
+    return internals.serverError(message, data, statusCode, exports.internal);
+};
+
+
+internals.serverError = function (message, data, statusCode, ctor) {
+
+    let error;
+    if (data instanceof Error) {
+        error = exports.wrap(data, statusCode, message);
+    }
+    else {
+        error = internals.create(statusCode || 500, message, undefined, ctor);
+        error.data = data;
+    }
+
+    return error;
+};
+
+
+exports.notImplemented = function (message, data) {
+
+    return internals.serverError(message, data, 501, exports.notImplemented);
+};
+
+
+exports.badGateway = function (message, data) {
+
+    return internals.serverError(message, data, 502, exports.badGateway);
+};
+
+
+exports.serverUnavailable = function (message, data) {
+
+    return internals.serverError(message, data, 503, exports.serverUnavailable);
+};
+
+
+exports.gatewayTimeout = function (message, data) {
+
+    return internals.serverError(message, data, 504, exports.gatewayTimeout);
+};
+
+
+exports.badImplementation = function (message, data) {
+
+    const err = internals.serverError(message, data, 500, exports.badImplementation);
+    err.isDeveloperError = true;
+    return err;
+};
