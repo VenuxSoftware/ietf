@@ -1,297 +1,273 @@
-"use strict"
+var nopt = require("../")
+  , test = require('tap').test
 
-const wcwidth = require('./width')
-const {
-  padRight,
-  padCenter,
-  padLeft,
-  splitIntoLines,
-  splitLongWords,
-  truncateString
-} = require('./utils')
 
-const DEFAULT_HEADING_TRANSFORM = key => key.toUpperCase()
-
-const DEFAULT_DATA_TRANSFORM = (cell, column, index) => cell
-
-const DEFAULTS = Object.freeze({
-  maxWidth: Infinity,
-  minWidth: 0,
-  columnSplitter: ' ',
-  truncate: false,
-  truncateMarker: '…',
-  preserveNewLines: false,
-  paddingChr: ' ',
-  showHeaders: true,
-  headingTransform: DEFAULT_HEADING_TRANSFORM,
-  dataTransform: DEFAULT_DATA_TRANSFORM
+test("passing a string results in a string", function (t) {
+  var parsed = nopt({ key: String }, {}, ["--key", "myvalue"], 0)
+  t.same(parsed.key, "myvalue")
+  t.end()
 })
 
-module.exports = function(items, options = {}) {
+// https://github.com/npm/nopt/issues/31
+test("Empty String results in empty string, not true", function (t) {
+  var parsed = nopt({ empty: String }, {}, ["--empty"], 0)
+  t.same(parsed.empty, "")
+  t.end()
+})
 
-  let columnConfigs = options.config || {}
-  delete options.config // remove config so doesn't appear on every column.
+test("~ path is resolved to $HOME", function (t) {
+  var path = require("path")
+  if (!process.env.HOME) process.env.HOME = "/tmp"
+  var parsed = nopt({key: path}, {}, ["--key=~/val"], 0)
+  t.same(parsed.key, path.resolve(process.env.HOME, "val"))
+  t.end()
+})
 
-  let maxLineWidth = options.maxLineWidth || Infinity
-  if (maxLineWidth === 'auto') maxLineWidth = process.stdout.columns || Infinity
-  delete options.maxLineWidth // this is a line control option, don't pass it to column
+// https://github.com/npm/nopt/issues/24
+test("Unknown options are not parsed as numbers", function (t) {
+    var parsed = nopt({"parse-me": Number}, null, ['--leave-as-is=1.20', '--parse-me=1.20'], 0)
+    t.equal(parsed['leave-as-is'], '1.20')
+    t.equal(parsed['parse-me'], 1.2)
+    t.end()
+});
 
-  // Option defaults inheritance:
-  // options.config[columnName] => options => DEFAULTS
-  options = mixin({}, DEFAULTS, options)
+// https://github.com/npm/nopt/issues/48
+test("Check types based on name of type", function (t) {
+  var parsed = nopt({"parse-me": {name: "Number"}}, null, ['--parse-me=1.20'], 0)
+  t.equal(parsed['parse-me'], 1.2)
+  t.end()
+})
 
-  options.config = options.config || Object.create(null)
 
-  options.spacing = options.spacing || '\n' // probably useless
-  options.preserveNewLines = !!options.preserveNewLines
-  options.showHeaders = !!options.showHeaders;
-  options.columns = options.columns || options.include // alias include/columns, prefer columns if supplied
-  let columnNames = options.columns || [] // optional user-supplied columns to include
+test("Missing types are not parsed", function (t) {
+  var parsed = nopt({"parse-me": {}}, null, ['--parse-me=1.20'], 0)
+  //should only contain argv
+  t.equal(Object.keys(parsed).length, 1)
+  t.end()
+})
 
-  items = toArray(items, columnNames)
+test("Types passed without a name are not parsed", function (t) {
+  var parsed = nopt({"parse-me": {}}, {}, ['--parse-me=1.20'], 0)
+  //should only contain argv
+  t.equal(Object.keys(parsed).length, 1)
+  t.end()
+})
 
-  // if not suppled column names, automatically determine columns from data keys
-  if (!columnNames.length) {
-    items.forEach(function(item) {
-      for (let columnName in item) {
-        if (columnNames.indexOf(columnName) === -1) columnNames.push(columnName)
-      }
-    })
-  }
+test("other tests", function (t) {
 
-  // initialize column defaults (each column inherits from options.config)
-  let columns = columnNames.reduce((columns, columnName) => {
-    let column = Object.create(options)
-    columns[columnName] = mixin(column, columnConfigs[columnName])
-    return columns
-  }, Object.create(null))
+  var util = require("util")
+    , Stream = require("stream")
+    , path = require("path")
+    , url = require("url")
 
-  // sanitize column settings
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.name = columnName
-    column.maxWidth = Math.ceil(column.maxWidth)
-    column.minWidth = Math.ceil(column.minWidth)
-    column.truncate = !!column.truncate
-    column.align = column.align || 'left'
-  })
-
-  // sanitize data
-  items = items.map(item => {
-    let result = Object.create(null)
-    columnNames.forEach(columnName => {
-      // null/undefined -> ''
-      result[columnName] = item[columnName] != null ? item[columnName] : ''
-      // toString everything
-      result[columnName] = '' + result[columnName]
-      if (columns[columnName].preserveNewLines) {
-        // merge non-newline whitespace chars
-        result[columnName] = result[columnName].replace(/[^\S\n]/gmi, ' ')
-      } else {
-        // merge all whitespace chars
-        result[columnName] = result[columnName].replace(/\s/gmi, ' ')
-      }
-    })
-    return result
-  })
-
-  // transform data cells
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let col = Object.create(column)
-      item[columnName] = column.dataTransform(item[columnName], col, index)
-
-      let changedKeys = Object.keys(col)
-      // disable default heading transform if we wrote to column.name
-      if (changedKeys.indexOf('name') !== -1) {
-        if (column.headingTransform !== DEFAULT_HEADING_TRANSFORM) return
-        column.headingTransform = heading => heading
-      }
-      changedKeys.forEach(key => column[key] = col[key])
-      return item
-    })
-  })
-
-  // add headers
-  let headers = {}
-  if(options.showHeaders) {
-    columnNames.forEach(columnName => {
-      let column = columns[columnName]
-
-      if(!column.showHeaders){
-        headers[columnName] = '';
-        return;
+    , shorthands =
+      { s : ["--loglevel", "silent"]
+      , d : ["--loglevel", "info"]
+      , dd : ["--loglevel", "verbose"]
+      , ddd : ["--loglevel", "silly"]
+      , noreg : ["--no-registry"]
+      , reg : ["--registry"]
+      , "no-reg" : ["--no-registry"]
+      , silent : ["--loglevel", "silent"]
+      , verbose : ["--loglevel", "verbose"]
+      , h : ["--usage"]
+      , H : ["--usage"]
+      , "?" : ["--usage"]
+      , help : ["--usage"]
+      , v : ["--version"]
+      , f : ["--force"]
+      , desc : ["--description"]
+      , "no-desc" : ["--no-description"]
+      , "local" : ["--no-global"]
+      , l : ["--long"]
+      , p : ["--parseable"]
+      , porcelain : ["--parseable"]
+      , g : ["--global"]
       }
 
-      headers[columnName] = column.headingTransform(column.name)
-    })
-    items.unshift(headers)
-  }
-  // get actual max-width between min & max
-  // based on length of data in columns
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items
-    .map(item => item[columnName])
-    .reduce((min, cur) => {
-      // if already at maxWidth don't bother testing
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-    }, 0)
-  })
-
-  // split long words so they can break onto multiple lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map(item => {
-      item[columnName] = splitLongWords(item[columnName], column.width, column.truncateMarker)
-      return item
-    })
-  })
-
-  // wrap long lines. each item is now an array of lines.
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let cell = item[columnName]
-      item[columnName] = splitIntoLines(cell, column.width)
-
-      // if truncating required, only include first line + add truncation char
-      if (column.truncate && item[columnName].length > 1) {
-        item[columnName] = splitIntoLines(cell, column.width - wcwidth(column.truncateMarker))
-        let firstLine = item[columnName][0]
-        if (!endsWith(firstLine, column.truncateMarker)) item[columnName][0] += column.truncateMarker
-        item[columnName] = item[columnName].slice(0, 1)
+    , types =
+      { aoa: Array
+      , nullstream: [null, Stream]
+      , date: Date
+      , str: String
+      , browser : String
+      , cache : path
+      , color : ["always", Boolean]
+      , depth : Number
+      , description : Boolean
+      , dev : Boolean
+      , editor : path
+      , force : Boolean
+      , global : Boolean
+      , globalconfig : path
+      , group : [String, Number]
+      , gzipbin : String
+      , logfd : [Number, Stream]
+      , loglevel : ["silent","win","error","warn","info","verbose","silly"]
+      , long : Boolean
+      , "node-version" : [false, String]
+      , npaturl : url
+      , npat : Boolean
+      , "onload-script" : [false, String]
+      , outfd : [Number, Stream]
+      , parseable : Boolean
+      , pre: Boolean
+      , prefix: path
+      , proxy : url
+      , "rebuild-bundle" : Boolean
+      , registry : url
+      , searchopts : String
+      , searchexclude: [null, String]
+      , shell : path
+      , t: [Array, String]
+      , tag : String
+      , tar : String
+      , tmp : path
+      , "unsafe-perm" : Boolean
+      , usage : Boolean
+      , user : String
+      , username : String
+      , userconfig : path
+      , version : Boolean
+      , viewer: path
+      , _exit : Boolean
+      , path: path
       }
-      return item
-    })
-  })
 
-  // recalculate column widths from truncated output/lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items.map(item => {
-      return item[columnName].reduce((min, cur) => {
-        if (min >= column.maxWidth) return min
-        return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-      }, 0)
-    }).reduce((min, cur) => {
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, cur)))
-    }, 0)
-  })
-
-
-  let rows = createRows(items, columns, columnNames, options.paddingChr) // merge lines into rows
-  // conceive output
-  return rows.reduce((output, row) => {
-    return output.concat(row.reduce((rowOut, line) => {
-      return rowOut.concat(line.join(options.columnSplitter))
-    }, []))
-  }, [])
-  .map(line => truncateString(line, maxLineWidth))
-  .join(options.spacing)
-}
-
-/**
- * Convert wrapped lines into rows with padded values.
- *
- * @param Array items data to process
- * @param Array columns column width settings for wrapping
- * @param Array columnNames column ordering
- * @return Array items wrapped in arrays, corresponding to lines
- */
-
-function createRows(items, columns, columnNames, paddingChr) {
-  return items.map(item => {
-    let row = []
-    let numLines = 0
-    columnNames.forEach(columnName => {
-      numLines = Math.max(numLines, item[columnName].length)
-    })
-    // combine matching lines of each rows
-    for (let i = 0; i < numLines; i++) {
-      row[i] = row[i] || []
-      columnNames.forEach(columnName => {
-        let column = columns[columnName]
-        let val = item[columnName][i] || '' // || '' ensures empty columns get padded
-        if (column.align === 'right') row[i].push(padLeft(val, column.width, paddingChr))
-        else if (column.align === 'center' || column.align === 'centre') row[i].push(padCenter(val, column.width, paddingChr))
-        else row[i].push(padRight(val, column.width, paddingChr))
-      })
-    }
-    return row
-  })
-}
-
-/**
- * Object.assign
- *
- * @return Object Object with properties mixed in.
- */
-
-function mixin(...args) {
-  if (Object.assign) return Object.assign(...args)
-  return ObjectAssign(...args)
-}
-
-function ObjectAssign(target, firstSource) {
-  "use strict";
-  if (target === undefined || target === null)
-    throw new TypeError("Cannot convert first argument to object");
-
-  var to = Object(target);
-
-  var hasPendingException = false;
-  var pendingException;
-
-  for (var i = 1; i < arguments.length; i++) {
-    var nextSource = arguments[i];
-    if (nextSource === undefined || nextSource === null)
-      continue;
-
-    var keysArray = Object.keys(Object(nextSource));
-    for (var nextIndex = 0, len = keysArray.length; nextIndex < len; nextIndex++) {
-      var nextKey = keysArray[nextIndex];
-      try {
-        var desc = Object.getOwnPropertyDescriptor(nextSource, nextKey);
-        if (desc !== undefined && desc.enumerable)
-          to[nextKey] = nextSource[nextKey];
-      } catch (e) {
-        if (!hasPendingException) {
-          hasPendingException = true;
-          pendingException = e;
+  ; [["-v", {version:true}, []]
+    ,["---v", {version:true}, []]
+    ,["ls -s --no-reg connect -d",
+      {loglevel:"info",registry:null},["ls","connect"]]
+    ,["ls ---s foo",{loglevel:"silent"},["ls","foo"]]
+    ,["ls --registry blargle", {}, ["ls"]]
+    ,["--no-registry", {registry:null}, []]
+    ,["--no-color true", {color:false}, []]
+    ,["--no-color false", {color:true}, []]
+    ,["--no-color", {color:false}, []]
+    ,["--color false", {color:false}, []]
+    ,["--color --logfd 7", {logfd:7,color:true}, []]
+    ,["--color=true", {color:true}, []]
+    ,["--logfd=10", {logfd:10}, []]
+    ,["--tmp=/tmp -tar=gtar",{tmp:"/tmp",tar:"gtar"},[]]
+    ,["--tmp=tmp -tar=gtar",
+      {tmp:path.resolve(process.cwd(), "tmp"),tar:"gtar"},[]]
+    ,["--logfd x", {}, []]
+    ,["a -true -- -no-false", {true:true},["a","-no-false"]]
+    ,["a -no-false", {false:false},["a"]]
+    ,["a -no-no-true", {true:true}, ["a"]]
+    ,["a -no-no-no-false", {false:false}, ["a"]]
+    ,["---NO-no-No-no-no-no-nO-no-no"+
+      "-No-no-no-no-no-no-no-no-no"+
+      "-no-no-no-no-NO-NO-no-no-no-no-no-no"+
+      "-no-body-can-do-the-boogaloo-like-I-do"
+     ,{"body-can-do-the-boogaloo-like-I-do":false}, []]
+    ,["we are -no-strangers-to-love "+
+      "--you-know=the-rules --and=so-do-i "+
+      "---im-thinking-of=a-full-commitment "+
+      "--no-you-would-get-this-from-any-other-guy "+
+      "--no-gonna-give-you-up "+
+      "-no-gonna-let-you-down=true "+
+      "--no-no-gonna-run-around false "+
+      "--desert-you=false "+
+      "--make-you-cry false "+
+      "--no-tell-a-lie "+
+      "--no-no-and-hurt-you false"
+     ,{"strangers-to-love":false
+      ,"you-know":"the-rules"
+      ,"and":"so-do-i"
+      ,"you-would-get-this-from-any-other-guy":false
+      ,"gonna-give-you-up":false
+      ,"gonna-let-you-down":false
+      ,"gonna-run-around":false
+      ,"desert-you":false
+      ,"make-you-cry":false
+      ,"tell-a-lie":false
+      ,"and-hurt-you":false
+      },["we", "are"]]
+    ,["-t one -t two -t three"
+     ,{t: ["one", "two", "three"]}
+     ,[]]
+    ,["-t one -t null -t three four five null"
+     ,{t: ["one", "null", "three"]}
+     ,["four", "five", "null"]]
+    ,["-t foo"
+     ,{t:["foo"]}
+     ,[]]
+    ,["--no-t"
+     ,{t:["false"]}
+     ,[]]
+    ,["-no-no-t"
+     ,{t:["true"]}
+     ,[]]
+    ,["-aoa one -aoa null -aoa 100"
+     ,{aoa:["one", null, '100']}
+     ,[]]
+    ,["-str 100"
+     ,{str:"100"}
+     ,[]]
+    ,["--color always"
+     ,{color:"always"}
+     ,[]]
+    ,["--no-nullstream"
+     ,{nullstream:null}
+     ,[]]
+    ,["--nullstream false"
+     ,{nullstream:null}
+     ,[]]
+    ,["--notadate=2011-01-25"
+     ,{notadate: "2011-01-25"}
+     ,[]]
+    ,["--date 2011-01-25"
+     ,{date: new Date("2011-01-25")}
+     ,[]]
+    ,["-cl 1"
+     ,{config: true, length: 1}
+     ,[]
+     ,{config: Boolean, length: Number, clear: Boolean}
+     ,{c: "--config", l: "--length"}]
+    ,["--acount bla"
+     ,{"acount":true}
+     ,["bla"]
+     ,{account: Boolean, credentials: Boolean, options: String}
+     ,{a:"--account", c:"--credentials",o:"--options"}]
+    ,["--clear"
+     ,{clear:true}
+     ,[]
+     ,{clear:Boolean,con:Boolean,len:Boolean,exp:Boolean,add:Boolean,rep:Boolean}
+     ,{c:"--con",l:"--len",e:"--exp",a:"--add",r:"--rep"}]
+    ,["--file -"
+     ,{"file":"-"}
+     ,[]
+     ,{file:String}
+     ,{}]
+    ,["--file -"
+     ,{"file":true}
+     ,["-"]
+     ,{file:Boolean}
+     ,{}]
+    ,["--path"
+     ,{"path":null}
+     ,[]]
+    ,["--path ."
+     ,{"path":process.cwd()}
+     ,[]]
+    ].forEach(function (test) {
+      var argv = test[0].split(/\s+/)
+        , opts = test[1]
+        , rem = test[2]
+        , actual = nopt(test[3] || types, test[4] || shorthands, argv, 0)
+        , parsed = actual.argv
+      delete actual.argv
+      for (var i in opts) {
+        var e = JSON.stringify(opts[i])
+          , a = JSON.stringify(actual[i] === undefined ? null : actual[i])
+        if (e && typeof e === "object") {
+          t.deepEqual(e, a)
+        } else {
+          t.equal(e, a)
         }
       }
-    }
-
-    if (hasPendingException)
-      throw pendingException;
-  }
-  return to;
-}
-
-/**
- * Adapted from String.prototype.endsWith polyfill.
- */
-
-function endsWith(target, searchString, position) {
-  position = position || target.length;
-  position = position - searchString.length;
-  let lastIndex = target.lastIndexOf(searchString);
-  return lastIndex !== -1 && lastIndex === position;
-}
-
-
-function toArray(items, columnNames) {
-  if (Array.isArray(items)) return items
-  let rows = []
-  for (let key in items) {
-    let item = {}
-    item[columnNames[0] || 'key'] = key
-    item[columnNames[1] || 'value'] = items[key]
-    rows.push(item)
-  }
-  return rows
-}
+      t.deepEqual(rem, parsed.remain)
+    })
+  t.end()
+})
