@@ -1,297 +1,394 @@
-"use strict"
+'use strict';
 
-const wcwidth = require('./width')
-const {
-  padRight,
-  padCenter,
-  padLeft,
-  splitIntoLines,
-  splitLongWords,
-  truncateString
-} = require('./utils')
+// Load modules
 
-const DEFAULT_HEADING_TRANSFORM = key => key.toUpperCase()
-
-const DEFAULT_DATA_TRANSFORM = (cell, column, index) => cell
-
-const DEFAULTS = Object.freeze({
-  maxWidth: Infinity,
-  minWidth: 0,
-  columnSplitter: ' ',
-  truncate: false,
-  truncateMarker: '…',
-  preserveNewLines: false,
-  paddingChr: ' ',
-  showHeaders: true,
-  headingTransform: DEFAULT_HEADING_TRANSFORM,
-  dataTransform: DEFAULT_DATA_TRANSFORM
-})
-
-module.exports = function(items, options = {}) {
-
-  let columnConfigs = options.config || {}
-  delete options.config // remove config so doesn't appear on every column.
-
-  let maxLineWidth = options.maxLineWidth || Infinity
-  if (maxLineWidth === 'auto') maxLineWidth = process.stdout.columns || Infinity
-  delete options.maxLineWidth // this is a line control option, don't pass it to column
-
-  // Option defaults inheritance:
-  // options.config[columnName] => options => DEFAULTS
-  options = mixin({}, DEFAULTS, options)
-
-  options.config = options.config || Object.create(null)
-
-  options.spacing = options.spacing || '\n' // probably useless
-  options.preserveNewLines = !!options.preserveNewLines
-  options.showHeaders = !!options.showHeaders;
-  options.columns = options.columns || options.include // alias include/columns, prefer columns if supplied
-  let columnNames = options.columns || [] // optional user-supplied columns to include
-
-  items = toArray(items, columnNames)
-
-  // if not suppled column names, automatically determine columns from data keys
-  if (!columnNames.length) {
-    items.forEach(function(item) {
-      for (let columnName in item) {
-        if (columnNames.indexOf(columnName) === -1) columnNames.push(columnName)
-      }
-    })
-  }
-
-  // initialize column defaults (each column inherits from options.config)
-  let columns = columnNames.reduce((columns, columnName) => {
-    let column = Object.create(options)
-    columns[columnName] = mixin(column, columnConfigs[columnName])
-    return columns
-  }, Object.create(null))
-
-  // sanitize column settings
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.name = columnName
-    column.maxWidth = Math.ceil(column.maxWidth)
-    column.minWidth = Math.ceil(column.minWidth)
-    column.truncate = !!column.truncate
-    column.align = column.align || 'left'
-  })
-
-  // sanitize data
-  items = items.map(item => {
-    let result = Object.create(null)
-    columnNames.forEach(columnName => {
-      // null/undefined -> ''
-      result[columnName] = item[columnName] != null ? item[columnName] : ''
-      // toString everything
-      result[columnName] = '' + result[columnName]
-      if (columns[columnName].preserveNewLines) {
-        // merge non-newline whitespace chars
-        result[columnName] = result[columnName].replace(/[^\S\n]/gmi, ' ')
-      } else {
-        // merge all whitespace chars
-        result[columnName] = result[columnName].replace(/\s/gmi, ' ')
-      }
-    })
-    return result
-  })
-
-  // transform data cells
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let col = Object.create(column)
-      item[columnName] = column.dataTransform(item[columnName], col, index)
-
-      let changedKeys = Object.keys(col)
-      // disable default heading transform if we wrote to column.name
-      if (changedKeys.indexOf('name') !== -1) {
-        if (column.headingTransform !== DEFAULT_HEADING_TRANSFORM) return
-        column.headingTransform = heading => heading
-      }
-      changedKeys.forEach(key => column[key] = col[key])
-      return item
-    })
-  })
-
-  // add headers
-  let headers = {}
-  if(options.showHeaders) {
-    columnNames.forEach(columnName => {
-      let column = columns[columnName]
-
-      if(!column.showHeaders){
-        headers[columnName] = '';
-        return;
-      }
-
-      headers[columnName] = column.headingTransform(column.name)
-    })
-    items.unshift(headers)
-  }
-  // get actual max-width between min & max
-  // based on length of data in columns
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items
-    .map(item => item[columnName])
-    .reduce((min, cur) => {
-      // if already at maxWidth don't bother testing
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-    }, 0)
-  })
-
-  // split long words so they can break onto multiple lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map(item => {
-      item[columnName] = splitLongWords(item[columnName], column.width, column.truncateMarker)
-      return item
-    })
-  })
-
-  // wrap long lines. each item is now an array of lines.
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let cell = item[columnName]
-      item[columnName] = splitIntoLines(cell, column.width)
-
-      // if truncating required, only include first line + add truncation char
-      if (column.truncate && item[columnName].length > 1) {
-        item[columnName] = splitIntoLines(cell, column.width - wcwidth(column.truncateMarker))
-        let firstLine = item[columnName][0]
-        if (!endsWith(firstLine, column.truncateMarker)) item[columnName][0] += column.truncateMarker
-        item[columnName] = item[columnName].slice(0, 1)
-      }
-      return item
-    })
-  })
-
-  // recalculate column widths from truncated output/lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items.map(item => {
-      return item[columnName].reduce((min, cur) => {
-        if (min >= column.maxWidth) return min
-        return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-      }, 0)
-    }).reduce((min, cur) => {
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, cur)))
-    }, 0)
-  })
+const Url = require('url');
+const Hoek = require('hoek');
+const Cryptiles = require('cryptiles');
+const Crypto = require('./crypto');
+const Utils = require('./utils');
 
 
-  let rows = createRows(items, columns, columnNames, options.paddingChr) // merge lines into rows
-  // conceive output
-  return rows.reduce((output, row) => {
-    return output.concat(row.reduce((rowOut, line) => {
-      return rowOut.concat(line.join(options.columnSplitter))
-    }, []))
-  }, [])
-  .map(line => truncateString(line, maxLineWidth))
-  .join(options.spacing)
-}
+// Declare internals
 
-/**
- * Convert wrapped lines into rows with padded values.
- *
- * @param Array items data to process
- * @param Array columns column width settings for wrapping
- * @param Array columnNames column ordering
- * @return Array items wrapped in arrays, corresponding to lines
- */
+const internals = {};
 
-function createRows(items, columns, columnNames, paddingChr) {
-  return items.map(item => {
-    let row = []
-    let numLines = 0
-    columnNames.forEach(columnName => {
-      numLines = Math.max(numLines, item[columnName].length)
-    })
-    // combine matching lines of each rows
-    for (let i = 0; i < numLines; i++) {
-      row[i] = row[i] || []
-      columnNames.forEach(columnName => {
-        let column = columns[columnName]
-        let val = item[columnName][i] || '' // || '' ensures empty columns get padded
-        if (column.align === 'right') row[i].push(padLeft(val, column.width, paddingChr))
-        else if (column.align === 'center' || column.align === 'centre') row[i].push(padCenter(val, column.width, paddingChr))
-        else row[i].push(padRight(val, column.width, paddingChr))
-      })
+
+// Generate an Authorization header for a given request
+
+/*
+    uri: 'http://example.com/resource?a=b' or object from Url.parse()
+    method: HTTP verb (e.g. 'GET', 'POST')
+    options: {
+
+        // Required
+
+        credentials: {
+            id: 'dh37fgj492je',
+            key: 'aoijedoaijsdlaksjdl',
+            algorithm: 'sha256'                                 // 'sha1', 'sha256'
+        },
+
+        // Optional
+
+        ext: 'application-specific',                        // Application specific data sent via the ext attribute
+        timestamp: Date.now() / 1000,                       // A pre-calculated timestamp in seconds
+        nonce: '2334f34f',                                  // A pre-generated nonce
+        localtimeOffsetMsec: 400,                           // Time offset to sync with server time (ignored if timestamp provided)
+        payload: '{"some":"payload"}',                      // UTF-8 encoded string for body hash generation (ignored if hash provided)
+        contentType: 'application/json',                    // Payload content-type (ignored if hash provided)
+        hash: 'U4MKKSmiVxk37JCCrAVIjV=',                    // Pre-calculated payload hash
+        app: '24s23423f34dx',                               // Oz application id
+        dlg: '234sz34tww3sd'                                // Oz delegated-by application id
     }
-    return row
-  })
-}
+*/
 
-/**
- * Object.assign
- *
- * @return Object Object with properties mixed in.
- */
+exports.header = function (uri, method, options) {
 
-function mixin(...args) {
-  if (Object.assign) return Object.assign(...args)
-  return ObjectAssign(...args)
-}
+    const result = {
+        field: '',
+        artifacts: {}
+    };
 
-function ObjectAssign(target, firstSource) {
-  "use strict";
-  if (target === undefined || target === null)
-    throw new TypeError("Cannot convert first argument to object");
+    // Validate inputs
 
-  var to = Object(target);
+    if (!uri || (typeof uri !== 'string' && typeof uri !== 'object') ||
+        !method || typeof method !== 'string' ||
+        !options || typeof options !== 'object') {
 
-  var hasPendingException = false;
-  var pendingException;
+        result.err = 'Invalid argument type';
+        return result;
+    }
 
-  for (var i = 1; i < arguments.length; i++) {
-    var nextSource = arguments[i];
-    if (nextSource === undefined || nextSource === null)
-      continue;
+    // Application time
 
-    var keysArray = Object.keys(Object(nextSource));
-    for (var nextIndex = 0, len = keysArray.length; nextIndex < len; nextIndex++) {
-      var nextKey = keysArray[nextIndex];
-      try {
-        var desc = Object.getOwnPropertyDescriptor(nextSource, nextKey);
-        if (desc !== undefined && desc.enumerable)
-          to[nextKey] = nextSource[nextKey];
-      } catch (e) {
-        if (!hasPendingException) {
-          hasPendingException = true;
-          pendingException = e;
+    const timestamp = options.timestamp || Utils.nowSecs(options.localtimeOffsetMsec);
+
+    // Validate credentials
+
+    const credentials = options.credentials;
+    if (!credentials ||
+        !credentials.id ||
+        !credentials.key ||
+        !credentials.algorithm) {
+
+        result.err = 'Invalid credential object';
+        return result;
+    }
+
+    if (Crypto.algorithms.indexOf(credentials.algorithm) === -1) {
+        result.err = 'Unknown algorithm';
+        return result;
+    }
+
+    // Parse URI
+
+    if (typeof uri === 'string') {
+        uri = Url.parse(uri);
+    }
+
+    // Calculate signature
+
+    const artifacts = {
+        ts: timestamp,
+        nonce: options.nonce || Cryptiles.randomString(6),
+        method,
+        resource: uri.pathname + (uri.search || ''),                            // Maintain trailing '?'
+        host: uri.hostname,
+        port: uri.port || (uri.protocol === 'http:' ? 80 : 443),
+        hash: options.hash,
+        ext: options.ext,
+        app: options.app,
+        dlg: options.dlg
+    };
+
+    result.artifacts = artifacts;
+
+    // Calculate payload hash
+
+    if (!artifacts.hash &&
+        (options.payload || options.payload === '')) {
+
+        artifacts.hash = Crypto.calculatePayloadHash(options.payload, credentials.algorithm, options.contentType);
+    }
+
+    const mac = Crypto.calculateMac('header', credentials, artifacts);
+
+    // Construct header
+
+    const hasExt = artifacts.ext !== null && artifacts.ext !== undefined && artifacts.ext !== '';       // Other falsey values allowed
+    let header = 'Hawk id="' + credentials.id +
+                 '", ts="' + artifacts.ts +
+                 '", nonce="' + artifacts.nonce +
+                 (artifacts.hash ? '", hash="' + artifacts.hash : '') +
+                 (hasExt ? '", ext="' + Hoek.escapeHeaderAttribute(artifacts.ext) : '') +
+                 '", mac="' + mac + '"';
+
+    if (artifacts.app) {
+        header = header + ', app="' + artifacts.app +
+                  (artifacts.dlg ? '", dlg="' + artifacts.dlg : '') + '"';
+    }
+
+    result.field = header;
+
+    return result;
+};
+
+
+// Validate server response
+
+/*
+    res:        node's response object
+    artifacts:  object received from header().artifacts
+    options: {
+        payload:    optional payload received
+        required:   specifies if a Server-Authorization header is required. Defaults to 'false'
+    }
+*/
+
+exports.authenticate = function (res, credentials, artifacts, options, callback) {
+
+    artifacts = Hoek.clone(artifacts);
+    options = options || {};
+
+    let wwwAttributes = null;
+    let serverAuthAttributes = null;
+
+    const finalize = function (err) {
+
+        if (callback) {
+            const headers = {
+                'www-authenticate': wwwAttributes,
+                'server-authorization': serverAuthAttributes
+            };
+
+            return callback(err, headers);
         }
-      }
+
+        return !err;
+    };
+
+    if (res.headers['www-authenticate']) {
+
+        // Parse HTTP WWW-Authenticate header
+
+        wwwAttributes = Utils.parseAuthorizationHeader(res.headers['www-authenticate'], ['ts', 'tsm', 'error']);
+        if (wwwAttributes instanceof Error) {
+            wwwAttributes = null;
+            return finalize(new Error('Invalid WWW-Authenticate header'));
+        }
+
+        // Validate server timestamp (not used to update clock since it is done via the SNPT client)
+
+        if (wwwAttributes.ts) {
+            const tsm = Crypto.calculateTsMac(wwwAttributes.ts, credentials);
+            if (tsm !== wwwAttributes.tsm) {
+                return finalize(new Error('Invalid server timestamp hash'));
+            }
+        }
     }
 
-    if (hasPendingException)
-      throw pendingException;
-  }
-  return to;
-}
+    // Parse HTTP Server-Authorization header
 
-/**
- * Adapted from String.prototype.endsWith polyfill.
- */
+    if (!res.headers['server-authorization'] &&
+        !options.required) {
 
-function endsWith(target, searchString, position) {
-  position = position || target.length;
-  position = position - searchString.length;
-  let lastIndex = target.lastIndexOf(searchString);
-  return lastIndex !== -1 && lastIndex === position;
-}
+        return finalize();
+    }
+
+    serverAuthAttributes = Utils.parseAuthorizationHeader(res.headers['server-authorization'], ['mac', 'ext', 'hash']);
+    if (serverAuthAttributes instanceof Error) {
+        serverAuthAttributes = null;
+        return finalize(new Error('Invalid Server-Authorization header'));
+    }
+
+    artifacts.ext = serverAuthAttributes.ext;
+    artifacts.hash = serverAuthAttributes.hash;
+
+    const mac = Crypto.calculateMac('response', credentials, artifacts);
+    if (mac !== serverAuthAttributes.mac) {
+        return finalize(new Error('Bad response mac'));
+    }
+
+    if (!options.payload &&
+        options.payload !== '') {
+
+        return finalize();
+    }
+
+    if (!serverAuthAttributes.hash) {
+        return finalize(new Error('Missing response hash attribute'));
+    }
+
+    const calculatedHash = Crypto.calculatePayloadHash(options.payload, credentials.algorithm, res.headers['content-type']);
+    if (calculatedHash !== serverAuthAttributes.hash) {
+        return finalize(new Error('Bad response payload mac'));
+    }
+
+    return finalize();
+};
 
 
-function toArray(items, columnNames) {
-  if (Array.isArray(items)) return items
-  let rows = []
-  for (let key in items) {
-    let item = {}
-    item[columnNames[0] || 'key'] = key
-    item[columnNames[1] || 'value'] = items[key]
-    rows.push(item)
-  }
-  return rows
-}
+// Generate a bewit value for a given URI
+
+/*
+    uri: 'http://example.com/resource?a=b' or object from Url.parse()
+    options: {
+
+        // Required
+
+        credentials: {
+            id: 'dh37fgj492je',
+            key: 'aoijedoaijsdlaksjdl',
+            algorithm: 'sha256'                             // 'sha1', 'sha256'
+        },
+        ttlSec: 60 * 60,                                    // TTL in seconds
+
+        // Optional
+
+        ext: 'application-specific',                        // Application specific data sent via the ext attribute
+        localtimeOffsetMsec: 400                            // Time offset to sync with server time
+    };
+*/
+
+exports.getBewit = function (uri, options) {
+
+    // Validate inputs
+
+    if (!uri ||
+        (typeof uri !== 'string' && typeof uri !== 'object') ||
+        !options ||
+        typeof options !== 'object' ||
+        !options.ttlSec) {
+
+        return '';
+    }
+
+    options.ext = (options.ext === null || options.ext === undefined ? '' : options.ext);       // Zero is valid value
+
+    // Application time
+
+    const now = Utils.now(options.localtimeOffsetMsec);
+
+    // Validate credentials
+
+    const credentials = options.credentials;
+    if (!credentials ||
+        !credentials.id ||
+        !credentials.key ||
+        !credentials.algorithm) {
+
+        return '';
+    }
+
+    if (Crypto.algorithms.indexOf(credentials.algorithm) === -1) {
+        return '';
+    }
+
+    // Parse URI
+
+    if (typeof uri === 'string') {
+        uri = Url.parse(uri);
+    }
+
+    // Calculate signature
+
+    const exp = Math.floor(now / 1000) + options.ttlSec;
+    const mac = Crypto.calculateMac('bewit', credentials, {
+        ts: exp,
+        nonce: '',
+        method: 'GET',
+        resource: uri.pathname + (uri.search || ''),                            // Maintain trailing '?'
+        host: uri.hostname,
+        port: uri.port || (uri.protocol === 'http:' ? 80 : 443),
+        ext: options.ext
+    });
+
+    // Construct bewit: id\exp\mac\ext
+
+    const bewit = credentials.id + '\\' + exp + '\\' + mac + '\\' + options.ext;
+    return Hoek.base64urlEncode(bewit);
+};
+
+
+// Generate an authorization string for a message
+
+/*
+    host: 'example.com',
+    port: 8000,
+    message: '{"some":"payload"}',                          // UTF-8 encoded string for body hash generation
+    options: {
+
+        // Required
+
+        credentials: {
+            id: 'dh37fgj492je',
+            key: 'aoijedoaijsdlaksjdl',
+            algorithm: 'sha256'                             // 'sha1', 'sha256'
+        },
+
+        // Optional
+
+        timestamp: Date.now() / 1000,                       // A pre-calculated timestamp in seconds
+        nonce: '2334f34f',                                  // A pre-generated nonce
+        localtimeOffsetMsec: 400,                           // Time offset to sync with server time (ignored if timestamp provided)
+    }
+*/
+
+exports.message = function (host, port, message, options) {
+
+    // Validate inputs
+
+    if (!host || typeof host !== 'string' ||
+        !port || typeof port !== 'number' ||
+        message === null || message === undefined || typeof message !== 'string' ||
+        !options || typeof options !== 'object') {
+
+        return null;
+    }
+
+    // Application time
+
+    const timestamp = options.timestamp || Utils.nowSecs(options.localtimeOffsetMsec);
+
+    // Validate credentials
+
+    const credentials = options.credentials;
+    if (!credentials ||
+        !credentials.id ||
+        !credentials.key ||
+        !credentials.algorithm) {
+
+        // Invalid credential object
+        return null;
+    }
+
+    if (Crypto.algorithms.indexOf(credentials.algorithm) === -1) {
+        return null;
+    }
+
+    // Calculate signature
+
+    const artifacts = {
+        ts: timestamp,
+        nonce: options.nonce || Cryptiles.randomString(6),
+        host,
+        port,
+        hash: Crypto.calculatePayloadHash(message, credentials.algorithm)
+    };
+
+    // Construct authorization
+
+    const result = {
+        id: credentials.id,
+        ts: artifacts.ts,
+        nonce: artifacts.nonce,
+        hash: artifacts.hash,
+        mac: Crypto.calculateMac('message', credentials, artifacts)
+    };
+
+    return result;
+};
+
+
+
