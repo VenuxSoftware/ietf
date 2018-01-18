@@ -1,297 +1,364 @@
-"use strict"
+const objFilter = require('./obj-filter')
+const specialKeys = ['$0', '--', '_']
 
-const wcwidth = require('./width')
-const {
-  padRight,
-  padCenter,
-  padLeft,
-  splitIntoLines,
-  splitLongWords,
-  truncateString
-} = require('./utils')
+// validation-type-stuff, missing params,
+// bad implications, custom checks.
+module.exports = function (yargs, usage, y18n) {
+  const __ = y18n.__
+  const __n = y18n.__n
+  const self = {}
 
-const DEFAULT_HEADING_TRANSFORM = key => key.toUpperCase()
+  // validate appropriate # of non-option
+  // arguments were provided, i.e., '_'.
+  self.nonOptionCount = function (argv) {
+    const demandedCommands = yargs.getDemandedCommands()
+    // don't count currently executing commands
+    const _s = argv._.length - yargs.getContext().commands.length
 
-const DEFAULT_DATA_TRANSFORM = (cell, column, index) => cell
-
-const DEFAULTS = Object.freeze({
-  maxWidth: Infinity,
-  minWidth: 0,
-  columnSplitter: ' ',
-  truncate: false,
-  truncateMarker: '…',
-  preserveNewLines: false,
-  paddingChr: ' ',
-  showHeaders: true,
-  headingTransform: DEFAULT_HEADING_TRANSFORM,
-  dataTransform: DEFAULT_DATA_TRANSFORM
-})
-
-module.exports = function(items, options = {}) {
-
-  let columnConfigs = options.config || {}
-  delete options.config // remove config so doesn't appear on every column.
-
-  let maxLineWidth = options.maxLineWidth || Infinity
-  if (maxLineWidth === 'auto') maxLineWidth = process.stdout.columns || Infinity
-  delete options.maxLineWidth // this is a line control option, don't pass it to column
-
-  // Option defaults inheritance:
-  // options.config[columnName] => options => DEFAULTS
-  options = mixin({}, DEFAULTS, options)
-
-  options.config = options.config || Object.create(null)
-
-  options.spacing = options.spacing || '\n' // probably useless
-  options.preserveNewLines = !!options.preserveNewLines
-  options.showHeaders = !!options.showHeaders;
-  options.columns = options.columns || options.include // alias include/columns, prefer columns if supplied
-  let columnNames = options.columns || [] // optional user-supplied columns to include
-
-  items = toArray(items, columnNames)
-
-  // if not suppled column names, automatically determine columns from data keys
-  if (!columnNames.length) {
-    items.forEach(function(item) {
-      for (let columnName in item) {
-        if (columnNames.indexOf(columnName) === -1) columnNames.push(columnName)
-      }
-    })
-  }
-
-  // initialize column defaults (each column inherits from options.config)
-  let columns = columnNames.reduce((columns, columnName) => {
-    let column = Object.create(options)
-    columns[columnName] = mixin(column, columnConfigs[columnName])
-    return columns
-  }, Object.create(null))
-
-  // sanitize column settings
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.name = columnName
-    column.maxWidth = Math.ceil(column.maxWidth)
-    column.minWidth = Math.ceil(column.minWidth)
-    column.truncate = !!column.truncate
-    column.align = column.align || 'left'
-  })
-
-  // sanitize data
-  items = items.map(item => {
-    let result = Object.create(null)
-    columnNames.forEach(columnName => {
-      // null/undefined -> ''
-      result[columnName] = item[columnName] != null ? item[columnName] : ''
-      // toString everything
-      result[columnName] = '' + result[columnName]
-      if (columns[columnName].preserveNewLines) {
-        // merge non-newline whitespace chars
-        result[columnName] = result[columnName].replace(/[^\S\n]/gmi, ' ')
-      } else {
-        // merge all whitespace chars
-        result[columnName] = result[columnName].replace(/\s/gmi, ' ')
-      }
-    })
-    return result
-  })
-
-  // transform data cells
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let col = Object.create(column)
-      item[columnName] = column.dataTransform(item[columnName], col, index)
-
-      let changedKeys = Object.keys(col)
-      // disable default heading transform if we wrote to column.name
-      if (changedKeys.indexOf('name') !== -1) {
-        if (column.headingTransform !== DEFAULT_HEADING_TRANSFORM) return
-        column.headingTransform = heading => heading
-      }
-      changedKeys.forEach(key => column[key] = col[key])
-      return item
-    })
-  })
-
-  // add headers
-  let headers = {}
-  if(options.showHeaders) {
-    columnNames.forEach(columnName => {
-      let column = columns[columnName]
-
-      if(!column.showHeaders){
-        headers[columnName] = '';
-        return;
-      }
-
-      headers[columnName] = column.headingTransform(column.name)
-    })
-    items.unshift(headers)
-  }
-  // get actual max-width between min & max
-  // based on length of data in columns
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items
-    .map(item => item[columnName])
-    .reduce((min, cur) => {
-      // if already at maxWidth don't bother testing
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-    }, 0)
-  })
-
-  // split long words so they can break onto multiple lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map(item => {
-      item[columnName] = splitLongWords(item[columnName], column.width, column.truncateMarker)
-      return item
-    })
-  })
-
-  // wrap long lines. each item is now an array of lines.
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let cell = item[columnName]
-      item[columnName] = splitIntoLines(cell, column.width)
-
-      // if truncating required, only include first line + add truncation char
-      if (column.truncate && item[columnName].length > 1) {
-        item[columnName] = splitIntoLines(cell, column.width - wcwidth(column.truncateMarker))
-        let firstLine = item[columnName][0]
-        if (!endsWith(firstLine, column.truncateMarker)) item[columnName][0] += column.truncateMarker
-        item[columnName] = item[columnName].slice(0, 1)
-      }
-      return item
-    })
-  })
-
-  // recalculate column widths from truncated output/lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items.map(item => {
-      return item[columnName].reduce((min, cur) => {
-        if (min >= column.maxWidth) return min
-        return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-      }, 0)
-    }).reduce((min, cur) => {
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, cur)))
-    }, 0)
-  })
-
-
-  let rows = createRows(items, columns, columnNames, options.paddingChr) // merge lines into rows
-  // conceive output
-  return rows.reduce((output, row) => {
-    return output.concat(row.reduce((rowOut, line) => {
-      return rowOut.concat(line.join(options.columnSplitter))
-    }, []))
-  }, [])
-  .map(line => truncateString(line, maxLineWidth))
-  .join(options.spacing)
-}
-
-/**
- * Convert wrapped lines into rows with padded values.
- *
- * @param Array items data to process
- * @param Array columns column width settings for wrapping
- * @param Array columnNames column ordering
- * @return Array items wrapped in arrays, corresponding to lines
- */
-
-function createRows(items, columns, columnNames, paddingChr) {
-  return items.map(item => {
-    let row = []
-    let numLines = 0
-    columnNames.forEach(columnName => {
-      numLines = Math.max(numLines, item[columnName].length)
-    })
-    // combine matching lines of each rows
-    for (let i = 0; i < numLines; i++) {
-      row[i] = row[i] || []
-      columnNames.forEach(columnName => {
-        let column = columns[columnName]
-        let val = item[columnName][i] || '' // || '' ensures empty columns get padded
-        if (column.align === 'right') row[i].push(padLeft(val, column.width, paddingChr))
-        else if (column.align === 'center' || column.align === 'centre') row[i].push(padCenter(val, column.width, paddingChr))
-        else row[i].push(padRight(val, column.width, paddingChr))
-      })
-    }
-    return row
-  })
-}
-
-/**
- * Object.assign
- *
- * @return Object Object with properties mixed in.
- */
-
-function mixin(...args) {
-  if (Object.assign) return Object.assign(...args)
-  return ObjectAssign(...args)
-}
-
-function ObjectAssign(target, firstSource) {
-  "use strict";
-  if (target === undefined || target === null)
-    throw new TypeError("Cannot convert first argument to object");
-
-  var to = Object(target);
-
-  var hasPendingException = false;
-  var pendingException;
-
-  for (var i = 1; i < arguments.length; i++) {
-    var nextSource = arguments[i];
-    if (nextSource === undefined || nextSource === null)
-      continue;
-
-    var keysArray = Object.keys(Object(nextSource));
-    for (var nextIndex = 0, len = keysArray.length; nextIndex < len; nextIndex++) {
-      var nextKey = keysArray[nextIndex];
-      try {
-        var desc = Object.getOwnPropertyDescriptor(nextSource, nextKey);
-        if (desc !== undefined && desc.enumerable)
-          to[nextKey] = nextSource[nextKey];
-      } catch (e) {
-        if (!hasPendingException) {
-          hasPendingException = true;
-          pendingException = e;
+    if (demandedCommands._ && (_s < demandedCommands._.min || _s > demandedCommands._.max)) {
+      if (_s < demandedCommands._.min) {
+        if (demandedCommands._.minMsg !== undefined) {
+          usage.fail(
+            // replace $0 with observed, $1 with expected.
+            demandedCommands._.minMsg ? demandedCommands._.minMsg.replace(/\$0/g, _s).replace(/\$1/, demandedCommands._.min) : null
+          )
+        } else {
+          usage.fail(
+            __('Not enough non-option arguments: got %s, need at least %s', _s, demandedCommands._.min)
+          )
+        }
+      } else if (_s > demandedCommands._.max) {
+        if (demandedCommands._.maxMsg !== undefined) {
+          usage.fail(
+            // replace $0 with observed, $1 with expected.
+            demandedCommands._.maxMsg ? demandedCommands._.maxMsg.replace(/\$0/g, _s).replace(/\$1/, demandedCommands._.max) : null
+          )
+        } else {
+          usage.fail(
+          __('Too many non-option arguments: got %s, maximum of %s', _s, demandedCommands._.max)
+          )
         }
       }
     }
-
-    if (hasPendingException)
-      throw pendingException;
   }
-  return to;
-}
 
-/**
- * Adapted from String.prototype.endsWith polyfill.
- */
-
-function endsWith(target, searchString, position) {
-  position = position || target.length;
-  position = position - searchString.length;
-  let lastIndex = target.lastIndexOf(searchString);
-  return lastIndex !== -1 && lastIndex === position;
-}
-
-
-function toArray(items, columnNames) {
-  if (Array.isArray(items)) return items
-  let rows = []
-  for (let key in items) {
-    let item = {}
-    item[columnNames[0] || 'key'] = key
-    item[columnNames[1] || 'value'] = items[key]
-    rows.push(item)
+  // validate the appropriate # of <required>
+  // positional arguments were provided:
+  self.positionalCount = function (required, observed) {
+    if (observed < required) {
+      usage.fail(
+        __('Not enough non-option arguments: got %s, need at least %s', observed, required)
+      )
+    }
   }
-  return rows
+
+  // make sure that any args that require an
+  // value (--foo=bar), have a value.
+  self.missingArgumentValue = function (argv) {
+    const defaultValues = [true, false, '']
+    const options = yargs.getOptions()
+
+    if (options.requiresArg.length > 0) {
+      const missingRequiredArgs = []
+
+      options.requiresArg.forEach(function (key) {
+        const value = argv[key]
+
+        // if a value is explicitly requested,
+        // flag argument as missing if it does not
+        // look like foo=bar was entered.
+        if (~defaultValues.indexOf(value) ||
+          (Array.isArray(value) && !value.length)) {
+          missingRequiredArgs.push(key)
+        }
+      })
+
+      if (missingRequiredArgs.length > 0) {
+        usage.fail(__n(
+          'Missing argument value: %s',
+          'Missing argument values: %s',
+          missingRequiredArgs.length,
+          missingRequiredArgs.join(', ')
+        ))
+      }
+    }
+  }
+
+  // make sure all the required arguments are present.
+  self.requiredArguments = function (argv) {
+    const demandedOptions = yargs.getDemandedOptions()
+    var missing = null
+
+    Object.keys(demandedOptions).forEach(function (key) {
+      if (!argv.hasOwnProperty(key) || typeof argv[key] === 'undefined') {
+        missing = missing || {}
+        missing[key] = demandedOptions[key]
+      }
+    })
+
+    if (missing) {
+      const customMsgs = []
+      Object.keys(missing).forEach(function (key) {
+        const msg = missing[key]
+        if (msg && customMsgs.indexOf(msg) < 0) {
+          customMsgs.push(msg)
+        }
+      })
+
+      const customMsg = customMsgs.length ? '\n' + customMsgs.join('\n') : ''
+
+      usage.fail(__n(
+        'Missing required argument: %s',
+        'Missing required arguments: %s',
+        Object.keys(missing).length,
+        Object.keys(missing).join(', ') + customMsg
+      ))
+    }
+  }
+
+  // check for unknown arguments (strict-mode).
+  self.unknownArguments = function (argv, aliases, positionalMap) {
+    const aliasLookup = {}
+    const descriptions = usage.getDescriptions()
+    const demandedOptions = yargs.getDemandedOptions()
+    const commandKeys = yargs.getCommandInstance().getCommands()
+    const unknown = []
+    const currentContext = yargs.getContext()
+
+    Object.keys(aliases).forEach(function (key) {
+      aliases[key].forEach(function (alias) {
+        aliasLookup[alias] = key
+      })
+    })
+
+    Object.keys(argv).forEach(function (key) {
+      if (specialKeys.indexOf(key) === -1 &&
+        !descriptions.hasOwnProperty(key) &&
+        !demandedOptions.hasOwnProperty(key) &&
+        !positionalMap.hasOwnProperty(key) &&
+        !yargs._getParseContext().hasOwnProperty(key) &&
+        !aliasLookup.hasOwnProperty(key)) {
+        unknown.push(key)
+      }
+    })
+
+    if (commandKeys.length > 0) {
+      argv._.slice(currentContext.commands.length).forEach(function (key) {
+        if (commandKeys.indexOf(key) === -1) {
+          unknown.push(key)
+        }
+      })
+    }
+
+    if (unknown.length > 0) {
+      usage.fail(__n(
+        'Unknown argument: %s',
+        'Unknown arguments: %s',
+        unknown.length,
+        unknown.join(', ')
+      ))
+    }
+  }
+
+  // validate arguments limited to enumerated choices
+  self.limitedChoices = function (argv) {
+    const options = yargs.getOptions()
+    const invalid = {}
+
+    if (!Object.keys(options.choices).length) return
+
+    Object.keys(argv).forEach(function (key) {
+      if (specialKeys.indexOf(key) === -1 &&
+        options.choices.hasOwnProperty(key)) {
+        [].concat(argv[key]).forEach(function (value) {
+          // TODO case-insensitive configurability
+          if (options.choices[key].indexOf(value) === -1) {
+            invalid[key] = (invalid[key] || []).concat(value)
+          }
+        })
+      }
+    })
+
+    const invalidKeys = Object.keys(invalid)
+
+    if (!invalidKeys.length) return
+
+    var msg = __('Invalid values:')
+    invalidKeys.forEach(function (key) {
+      msg += '\n  ' + __(
+        'Argument: %s, Given: %s, Choices: %s',
+        key,
+        usage.stringifiedValues(invalid[key]),
+        usage.stringifiedValues(options.choices[key])
+      )
+    })
+    usage.fail(msg)
+  }
+
+  // custom checks, added using the `check` option on yargs.
+  var checks = []
+  self.check = function (f, global) {
+    checks.push({
+      func: f,
+      global: global
+    })
+  }
+
+  self.customChecks = function (argv, aliases) {
+    for (var i = 0, f; (f = checks[i]) !== undefined; i++) {
+      var func = f.func
+      var result = null
+      try {
+        result = func(argv, aliases)
+      } catch (err) {
+        usage.fail(err.message ? err.message : err, err)
+        continue
+      }
+
+      if (!result) {
+        usage.fail(__('Argument check failed: %s', func.toString()))
+      } else if (typeof result === 'string' || result instanceof Error) {
+        usage.fail(result.toString(), result)
+      }
+    }
+  }
+
+  // check implications, argument foo implies => argument bar.
+  var implied = {}
+  self.implies = function (key, value) {
+    if (typeof key === 'object') {
+      Object.keys(key).forEach(function (k) {
+        self.implies(k, key[k])
+      })
+    } else {
+      yargs.global(key)
+      implied[key] = value
+    }
+  }
+  self.getImplied = function () {
+    return implied
+  }
+
+  self.implications = function (argv) {
+    const implyFail = []
+
+    Object.keys(implied).forEach(function (key) {
+      var num
+      const origKey = key
+      var value = implied[key]
+
+      // convert string '1' to number 1
+      num = Number(key)
+      key = isNaN(num) ? key : num
+
+      if (typeof key === 'number') {
+        // check length of argv._
+        key = argv._.length >= key
+      } else if (key.match(/^--no-.+/)) {
+        // check if key doesn't exist
+        key = key.match(/^--no-(.+)/)[1]
+        key = !argv[key]
+      } else {
+        // check if key exists
+        key = argv[key]
+      }
+
+      num = Number(value)
+      value = isNaN(num) ? value : num
+
+      if (typeof value === 'number') {
+        value = argv._.length >= value
+      } else if (value.match(/^--no-.+/)) {
+        value = value.match(/^--no-(.+)/)[1]
+        value = !argv[value]
+      } else {
+        value = argv[value]
+      }
+
+      if (key && !value) {
+        implyFail.push(origKey)
+      }
+    })
+
+    if (implyFail.length) {
+      var msg = __('Implications failed:') + '\n'
+
+      implyFail.forEach(function (key) {
+        msg += ('  ' + key + ' -> ' + implied[key])
+      })
+
+      usage.fail(msg)
+    }
+  }
+
+  var conflicting = {}
+  self.conflicts = function (key, value) {
+    if (typeof key === 'object') {
+      Object.keys(key).forEach(function (k) {
+        self.conflicts(k, key[k])
+      })
+    } else {
+      yargs.global(key)
+      conflicting[key] = value
+    }
+  }
+  self.getConflicting = function () {
+    return conflicting
+  }
+
+  self.conflicting = function (argv) {
+    var args = Object.getOwnPropertyNames(argv)
+
+    args.forEach(function (arg) {
+      if (conflicting[arg] && args.indexOf(conflicting[arg]) !== -1) {
+        usage.fail(__('Arguments %s and %s are mutually exclusive', arg, conflicting[arg]))
+      }
+    })
+  }
+
+  self.recommendCommands = function (cmd, potentialCommands) {
+    const distance = require('./levenshtein')
+    const threshold = 3 // if it takes more than three edits, let's move on.
+    potentialCommands = potentialCommands.sort(function (a, b) { return b.length - a.length })
+
+    var recommended = null
+    var bestDistance = Infinity
+    for (var i = 0, candidate; (candidate = potentialCommands[i]) !== undefined; i++) {
+      var d = distance(cmd, candidate)
+      if (d <= threshold && d < bestDistance) {
+        bestDistance = d
+        recommended = candidate
+      }
+    }
+    if (recommended) usage.fail(__('Did you mean %s?', recommended))
+  }
+
+  self.reset = function (localLookup) {
+    implied = objFilter(implied, function (k, v) {
+      return !localLookup[k]
+    })
+    conflicting = objFilter(conflicting, function (k, v) {
+      return !localLookup[k]
+    })
+    checks = checks.filter(function (c) {
+      return c.global
+    })
+    return self
+  }
+
+  var frozen
+  self.freeze = function () {
+    frozen = {}
+    frozen.implied = implied
+    frozen.checks = checks
+    frozen.conflicting = conflicting
+  }
+  self.unfreeze = function () {
+    implied = frozen.implied
+    checks = frozen.checks
+    conflicting = frozen.conflicting
+    frozen = undefined
+  }
+
+  return self
 }
