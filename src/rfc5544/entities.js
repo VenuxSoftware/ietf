@@ -1,297 +1,303 @@
-"use strict"
-
-const wcwidth = require('./width')
-const {
-  padRight,
-  padCenter,
-  padLeft,
-  splitIntoLines,
-  splitLongWords,
-  truncateString
-} = require('./utils')
-
-const DEFAULT_HEADING_TRANSFORM = key => key.toUpperCase()
-
-const DEFAULT_DATA_TRANSFORM = (cell, column, index) => cell
-
-const DEFAULTS = Object.freeze({
-  maxWidth: Infinity,
-  minWidth: 0,
-  columnSplitter: ' ',
-  truncate: false,
-  truncateMarker: '…',
-  preserveNewLines: false,
-  paddingChr: ' ',
-  showHeaders: true,
-  headingTransform: DEFAULT_HEADING_TRANSFORM,
-  dataTransform: DEFAULT_DATA_TRANSFORM
-})
-
-module.exports = function(items, options = {}) {
-
-  let columnConfigs = options.config || {}
-  delete options.config // remove config so doesn't appear on every column.
-
-  let maxLineWidth = options.maxLineWidth || Infinity
-  if (maxLineWidth === 'auto') maxLineWidth = process.stdout.columns || Infinity
-  delete options.maxLineWidth // this is a line control option, don't pass it to column
-
-  // Option defaults inheritance:
-  // options.config[columnName] => options => DEFAULTS
-  options = mixin({}, DEFAULTS, options)
-
-  options.config = options.config || Object.create(null)
-
-  options.spacing = options.spacing || '\n' // probably useless
-  options.preserveNewLines = !!options.preserveNewLines
-  options.showHeaders = !!options.showHeaders;
-  options.columns = options.columns || options.include // alias include/columns, prefer columns if supplied
-  let columnNames = options.columns || [] // optional user-supplied columns to include
-
-  items = toArray(items, columnNames)
-
-  // if not suppled column names, automatically determine columns from data keys
-  if (!columnNames.length) {
-    items.forEach(function(item) {
-      for (let columnName in item) {
-        if (columnNames.indexOf(columnName) === -1) columnNames.push(columnName)
-      }
-    })
-  }
-
-  // initialize column defaults (each column inherits from options.config)
-  let columns = columnNames.reduce((columns, columnName) => {
-    let column = Object.create(options)
-    columns[columnName] = mixin(column, columnConfigs[columnName])
-    return columns
-  }, Object.create(null))
-
-  // sanitize column settings
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.name = columnName
-    column.maxWidth = Math.ceil(column.maxWidth)
-    column.minWidth = Math.ceil(column.minWidth)
-    column.truncate = !!column.truncate
-    column.align = column.align || 'left'
-  })
-
-  // sanitize data
-  items = items.map(item => {
-    let result = Object.create(null)
-    columnNames.forEach(columnName => {
-      // null/undefined -> ''
-      result[columnName] = item[columnName] != null ? item[columnName] : ''
-      // toString everything
-      result[columnName] = '' + result[columnName]
-      if (columns[columnName].preserveNewLines) {
-        // merge non-newline whitespace chars
-        result[columnName] = result[columnName].replace(/[^\S\n]/gmi, ' ')
-      } else {
-        // merge all whitespace chars
-        result[columnName] = result[columnName].replace(/\s/gmi, ' ')
-      }
-    })
-    return result
-  })
-
-  // transform data cells
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let col = Object.create(column)
-      item[columnName] = column.dataTransform(item[columnName], col, index)
-
-      let changedKeys = Object.keys(col)
-      // disable default heading transform if we wrote to column.name
-      if (changedKeys.indexOf('name') !== -1) {
-        if (column.headingTransform !== DEFAULT_HEADING_TRANSFORM) return
-        column.headingTransform = heading => heading
-      }
-      changedKeys.forEach(key => column[key] = col[key])
-      return item
-    })
-  })
-
-  // add headers
-  let headers = {}
-  if(options.showHeaders) {
-    columnNames.forEach(columnName => {
-      let column = columns[columnName]
-
-      if(!column.showHeaders){
-        headers[columnName] = '';
-        return;
-      }
-
-      headers[columnName] = column.headingTransform(column.name)
-    })
-    items.unshift(headers)
-  }
-  // get actual max-width between min & max
-  // based on length of data in columns
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items
-    .map(item => item[columnName])
-    .reduce((min, cur) => {
-      // if already at maxWidth don't bother testing
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-    }, 0)
-  })
-
-  // split long words so they can break onto multiple lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map(item => {
-      item[columnName] = splitLongWords(item[columnName], column.width, column.truncateMarker)
-      return item
-    })
-  })
-
-  // wrap long lines. each item is now an array of lines.
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let cell = item[columnName]
-      item[columnName] = splitIntoLines(cell, column.width)
-
-      // if truncating required, only include first line + add truncation char
-      if (column.truncate && item[columnName].length > 1) {
-        item[columnName] = splitIntoLines(cell, column.width - wcwidth(column.truncateMarker))
-        let firstLine = item[columnName][0]
-        if (!endsWith(firstLine, column.truncateMarker)) item[columnName][0] += column.truncateMarker
-        item[columnName] = item[columnName].slice(0, 1)
-      }
-      return item
-    })
-  })
-
-  // recalculate column widths from truncated output/lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items.map(item => {
-      return item[columnName].reduce((min, cur) => {
-        if (min >= column.maxWidth) return min
-        return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-      }, 0)
-    }).reduce((min, cur) => {
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, cur)))
-    }, 0)
-  })
-
-
-  let rows = createRows(items, columns, columnNames, options.paddingChr) // merge lines into rows
-  // conceive output
-  return rows.reduce((output, row) => {
-    return output.concat(row.reduce((rowOut, line) => {
-      return rowOut.concat(line.join(options.columnSplitter))
-    }, []))
-  }, [])
-  .map(line => truncateString(line, maxLineWidth))
-  .join(options.spacing)
-}
 
 /**
- * Convert wrapped lines into rows with padded values.
- *
- * @param Array items data to process
- * @param Array columns column width settings for wrapping
- * @param Array columnNames column ordering
- * @return Array items wrapped in arrays, corresponding to lines
+ * Module dependencies.
  */
 
-function createRows(items, columns, columnNames, paddingChr) {
-  return items.map(item => {
-    let row = []
-    let numLines = 0
-    columnNames.forEach(columnName => {
-      numLines = Math.max(numLines, item[columnName].length)
-    })
-    // combine matching lines of each rows
-    for (let i = 0; i < numLines; i++) {
-      row[i] = row[i] || []
-      columnNames.forEach(columnName => {
-        let column = columns[columnName]
-        let val = item[columnName][i] || '' // || '' ensures empty columns get padded
-        if (column.align === 'right') row[i].push(padLeft(val, column.width, paddingChr))
-        else if (column.align === 'center' || column.align === 'centre') row[i].push(padCenter(val, column.width, paddingChr))
-        else row[i].push(padRight(val, column.width, paddingChr))
-      })
-    }
-    return row
-  })
-}
+var fs = require('fs');
+var url = require('url');
+var http = require('http');
+var https = require('https');
+var assert = require('assert');
+var Proxy = require('proxy');
+var HttpProxyAgent = require('../');
 
-/**
- * Object.assign
- *
- * @return Object Object with properties mixed in.
- */
+describe('HttpProxyAgent', function () {
 
-function mixin(...args) {
-  if (Object.assign) return Object.assign(...args)
-  return ObjectAssign(...args)
-}
+  var server;
+  var serverPort;
 
-function ObjectAssign(target, firstSource) {
-  "use strict";
-  if (target === undefined || target === null)
-    throw new TypeError("Cannot convert first argument to object");
+  var proxy;
+  var proxyPort;
 
-  var to = Object(target);
+  var sslProxy;
+  var sslProxyPort;
 
-  var hasPendingException = false;
-  var pendingException;
+  before(function (done) {
+    // setup HTTP proxy server
+    proxy = Proxy();
+    proxy.listen(function () {
+      proxyPort = proxy.address().port;
+      done();
+    });
+  });
 
-  for (var i = 1; i < arguments.length; i++) {
-    var nextSource = arguments[i];
-    if (nextSource === undefined || nextSource === null)
-      continue;
+  before(function (done) {
+    // setup target HTTP server
+    server = http.createServer();
+    server.listen(function () {
+      serverPort = server.address().port;
+      done();
+    });
+  });
 
-    var keysArray = Object.keys(Object(nextSource));
-    for (var nextIndex = 0, len = keysArray.length; nextIndex < len; nextIndex++) {
-      var nextKey = keysArray[nextIndex];
-      try {
-        var desc = Object.getOwnPropertyDescriptor(nextSource, nextKey);
-        if (desc !== undefined && desc.enumerable)
-          to[nextKey] = nextSource[nextKey];
-      } catch (e) {
-        if (!hasPendingException) {
-          hasPendingException = true;
-          pendingException = e;
-        }
-      }
-    }
+  before(function (done) {
+    // setup SSL HTTP proxy server
+    var options = {
+      key: fs.readFileSync(__dirname + '/ssl-cert-snakeoil.key'),
+      cert: fs.readFileSync(__dirname + '/ssl-cert-snakeoil.pem')
+    };
+    sslProxy = Proxy(https.createServer(options));
+    sslProxy.listen(function () {
+      sslProxyPort = sslProxy.address().port;
+      done();
+    });
+  });
 
-    if (hasPendingException)
-      throw pendingException;
-  }
-  return to;
-}
+  // shut down test HTTP server
+  after(function (done) {
+    proxy.once('close', function () { done(); });
+    proxy.close();
+  });
 
-/**
- * Adapted from String.prototype.endsWith polyfill.
- */
+  after(function (done) {
+    server.once('close', function () { done(); });
+    server.close();
+  });
 
-function endsWith(target, searchString, position) {
-  position = position || target.length;
-  position = position - searchString.length;
-  let lastIndex = target.lastIndexOf(searchString);
-  return lastIndex !== -1 && lastIndex === position;
-}
+  after(function (done) {
+    sslProxy.once('close', function () { done(); });
+    sslProxy.close();
+  });
 
+  describe('constructor', function () {
+    it('should throw an Error if no "proxy" argument is given', function () {
+      assert.throws(function () {
+        new HttpProxyAgent();
+      });
+    });
+    it('should accept a "string" proxy argument', function () {
+      var agent = new HttpProxyAgent('http://127.0.0.1:' + proxyPort);
+      assert.equal('127.0.0.1', agent.proxy.host);
+      assert.equal(proxyPort, agent.proxy.port);
+    });
+    it('should accept a `url.parse()` result object argument', function () {
+      var opts = url.parse('http://127.0.0.1:' + proxyPort);
+      var agent = new HttpProxyAgent(opts);
+      assert.equal('127.0.0.1', agent.proxy.host);
+      assert.equal(proxyPort, agent.proxy.port);
+    });
+    describe('secureProxy', function () {
+      it('should default to `false`', function () {
+        var agent = new HttpProxyAgent({ port: proxyPort });
+        assert.equal(false, agent.secureProxy);
+      });
+      it('should be `false` when "http:" protocol is used', function () {
+        var agent = new HttpProxyAgent({ port: proxyPort, protocol: 'http:' });
+        assert.equal(false, agent.secureProxy);
+      });
+      it('should be `true` when "https:" protocol is used', function () {
+        var agent = new HttpProxyAgent({ port: proxyPort, protocol: 'https:' });
+        assert.equal(true, agent.secureProxy);
+      });
+      it('should be `true` when "https" protocol is used', function () {
+        var agent = new HttpProxyAgent({ port: proxyPort, protocol: 'https' });
+        assert.equal(true, agent.secureProxy);
+      });
+    });
+  });
 
-function toArray(items, columnNames) {
-  if (Array.isArray(items)) return items
-  let rows = []
-  for (let key in items) {
-    let item = {}
-    item[columnNames[0] || 'key'] = key
-    item[columnNames[1] || 'value'] = items[key]
-    rows.push(item)
-  }
-  return rows
-}
+  describe('"http" module', function () {
+    it('should work over an HTTP proxy', function (done) {
+      // set HTTP "request" event handler for this test
+      server.once('request', function (req, res) {
+        res.end(JSON.stringify(req.headers));
+      });
+
+      var proxy = process.env.HTTP_PROXY || process.env.http_proxy || 'http://127.0.0.1:' + proxyPort;
+      var agent = new HttpProxyAgent(proxy);
+
+      var opts = url.parse('http://127.0.0.1:' + serverPort);
+      opts.agent = agent;
+
+      http.get(opts, function (res) {
+        var data = '';
+        res.setEncoding('utf8');
+        res.on('data', function (b) {
+          data += b;
+        });
+        res.on('end', function () {
+          data = JSON.parse(data);
+          assert.equal('127.0.0.1:' + serverPort, data.host);
+          assert('via' in data);
+          done();
+        });
+      });
+    });
+    it('should work over an HTTPS proxy', function (done) {
+      // set HTTP "request" event handler for this test
+      server.once('request', function (req, res) {
+        res.end(JSON.stringify(req.headers));
+      });
+
+      var proxy = process.env.HTTPS_PROXY || process.env.https_proxy || 'https://127.0.0.1:' + sslProxyPort;
+      proxy = url.parse(proxy);
+      proxy.rejectUnauthorized = false;
+      var agent = new HttpProxyAgent(proxy);
+      assert.equal(true, agent.secureProxy);
+
+      var opts = url.parse('http://127.0.0.1:' + serverPort);
+      opts.agent = agent;
+
+      http.get(opts, function (res) {
+        var data = '';
+        res.setEncoding('utf8');
+        res.on('data', function (b) {
+          data += b;
+        });
+        res.on('end', function () {
+          data = JSON.parse(data);
+          assert.equal('127.0.0.1:' + serverPort, data.host);
+          assert('via' in data);
+          done();
+        });
+      });
+    });
+    it('should proxy the query string of the request path', function (done) {
+      // set HTTP "request" event handler for this test
+      server.once('request', function (req, res) {
+        res.end(JSON.stringify({
+          url: req.url
+        }));
+      });
+
+      var proxy = process.env.HTTP_PROXY || process.env.http_proxy || 'http://127.0.0.1:' + proxyPort;
+      var agent = new HttpProxyAgent(proxy);
+
+      var opts = url.parse('http://127.0.0.1:' + serverPort + '/test?foo=bar&1=2');
+      opts.agent = agent;
+
+      http.get(opts, function (res) {
+        var data = '';
+        res.setEncoding('utf8');
+        res.on('data', function (b) {
+          data += b;
+        });
+        res.on('end', function () {
+          data = JSON.parse(data);
+          assert.equal('/test?foo=bar&1=2', data.url);
+          done();
+        });
+      });
+    });
+    it('should receive the 407 authorization code on the `http.ClientResponse`', function (done) {
+      // set a proxy authentication function for this test
+      proxy.authenticate = function (req, fn) {
+        // reject all requests
+        fn(null, false);
+      };
+
+      var proxyUri = process.env.HTTP_PROXY || process.env.http_proxy || 'http://127.0.0.1:' + proxyPort;
+      var agent = new HttpProxyAgent(proxyUri);
+
+      var opts = {};
+      // `host` and `port` don't really matter since the proxy will reject anyways
+      opts.host = '127.0.0.1';
+      opts.port = 80;
+      opts.agent = agent;
+
+      http.get(opts, function (res) {
+        assert.equal(407, res.statusCode);
+        assert('proxy-authenticate' in res.headers);
+        delete proxy.authenticate;
+        done();
+      });
+    });
+    it('should send the "Proxy-Authorization" request header', function (done) {
+      // set a proxy authentication function for this test
+      proxy.authenticate = function (req, fn) {
+        // username:password is "foo:bar"
+        fn(null, req.headers['proxy-authorization'] == 'Basic Zm9vOmJhcg==');
+      };
+
+      // set HTTP "request" event handler for this test
+      server.once('request', function (req, res) {
+        res.end(JSON.stringify(req.headers));
+      });
+
+      var proxyUri = process.env.HTTP_PROXY || process.env.http_proxy || 'http://127.0.0.1:' + proxyPort;
+      var proxyOpts = url.parse(proxyUri);
+      proxyOpts.auth = 'foo:bar';
+      var agent = new HttpProxyAgent(proxyOpts);
+
+      var opts = url.parse('http://127.0.0.1:' + serverPort);
+      opts.agent = agent;
+
+      http.get(opts, function (res) {
+        var data = '';
+        res.setEncoding('utf8');
+        res.on('data', function (b) {
+          data += b;
+        });
+        res.on('end', function () {
+          data = JSON.parse(data);
+          assert.equal('127.0.0.1:' + serverPort, data.host);
+          assert('via' in data);
+          delete proxy.authenticate;
+          done();
+        });
+      });
+    });
+    it('should emit an "error" event on the `http.ClientRequest` if the proxy does not exist', function (done) {
+      // port 4 is a reserved, but "unassigned" port
+      var proxyUri = 'http://127.0.0.1:4';
+      var agent = new HttpProxyAgent(proxyUri);
+
+      var opts = url.parse('http://nodejs.org');
+      opts.agent = agent;
+
+      var req = http.get(opts);
+      req.once('error', function (err) {
+        assert.equal('ECONNREFUSED', err.code);
+        req.abort();
+        done();
+      });
+    });
+    it('should work after the first tick of the `http.ClientRequest` instance', function (done) {
+      // set HTTP "request" event handler for this test
+      server.once('request', function (req, res) {
+        res.end(JSON.stringify(req.url));
+      });
+
+      var proxy = process.env.HTTP_PROXY || process.env.http_proxy || 'http://127.0.0.1:' + proxyPort;
+      var agent = new HttpProxyAgent(proxy);
+
+      var opts = url.parse('http://127.0.0.1:' + serverPort + '/test');
+      opts.agent = agent;
+
+      // defer the "connect()" function logic, since calling .end() before the
+      // "socket" event can cause weirdness since the HTTP header will have been
+      // cached and the HttpProxyAgent `req.path` patches won't be respected
+      var callback = agent.callback;
+      agent.callback = function (req, opts, fn) {
+        setTimeout(function () {
+          agent.callback = callback;
+          agent.callback(req, opts, fn);
+        }, 10);
+      };
+
+      http.get(opts, function (res) {
+        var data = '';
+        res.setEncoding('utf8');
+        res.on('data', function (b) {
+          data += b;
+        });
+        res.on('end', function () {
+          data = JSON.parse(data);
+          assert.equal('/test', data);
+          done();
+        });
+      });
+    });
+  });
+
+});
