@@ -1,297 +1,266 @@
-"use strict"
 
-const wcwidth = require('./width')
-const {
-  padRight,
-  padCenter,
-  padLeft,
-  splitIntoLines,
-  splitLongWords,
-  truncateString
-} = require('./utils')
+module.exports = exports = build
 
-const DEFAULT_HEADING_TRANSFORM = key => key.toUpperCase()
+/**
+ * Module dependencies.
+ */
 
-const DEFAULT_DATA_TRANSFORM = (cell, column, index) => cell
+var fs = require('graceful-fs')
+  , rm = require('rimraf')
+  , path = require('path')
+  , glob = require('glob')
+  , log = require('npmlog')
+  , which = require('which')
+  , exec = require('child_process').exec
+  , processRelease = require('./process-release')
+  , win = process.platform === 'win32'
 
-const DEFAULTS = Object.freeze({
-  maxWidth: Infinity,
-  minWidth: 0,
-  columnSplitter: ' ',
-  truncate: false,
-  truncateMarker: '…',
-  preserveNewLines: false,
-  paddingChr: ' ',
-  showHeaders: true,
-  headingTransform: DEFAULT_HEADING_TRANSFORM,
-  dataTransform: DEFAULT_DATA_TRANSFORM
-})
+exports.usage = 'Invokes `' + (win ? 'msbuild' : 'make') + '` and builds the module'
 
-module.exports = function(items, options = {}) {
-
-  let columnConfigs = options.config || {}
-  delete options.config // remove config so doesn't appear on every column.
-
-  let maxLineWidth = options.maxLineWidth || Infinity
-  if (maxLineWidth === 'auto') maxLineWidth = process.stdout.columns || Infinity
-  delete options.maxLineWidth // this is a line control option, don't pass it to column
-
-  // Option defaults inheritance:
-  // options.config[columnName] => options => DEFAULTS
-  options = mixin({}, DEFAULTS, options)
-
-  options.config = options.config || Object.create(null)
-
-  options.spacing = options.spacing || '\n' // probably useless
-  options.preserveNewLines = !!options.preserveNewLines
-  options.showHeaders = !!options.showHeaders;
-  options.columns = options.columns || options.include // alias include/columns, prefer columns if supplied
-  let columnNames = options.columns || [] // optional user-supplied columns to include
-
-  items = toArray(items, columnNames)
-
-  // if not suppled column names, automatically determine columns from data keys
-  if (!columnNames.length) {
-    items.forEach(function(item) {
-      for (let columnName in item) {
-        if (columnNames.indexOf(columnName) === -1) columnNames.push(columnName)
-      }
-    })
+function build (gyp, argv, callback) {
+  var platformMake = 'make'
+  if (process.platform === 'aix') {
+    platformMake = 'gmake'
+  } else if (process.platform.indexOf('bsd') !== -1) {
+    platformMake = 'gmake'
   }
 
-  // initialize column defaults (each column inherits from options.config)
-  let columns = columnNames.reduce((columns, columnName) => {
-    let column = Object.create(options)
-    columns[columnName] = mixin(column, columnConfigs[columnName])
-    return columns
-  }, Object.create(null))
+  var release = processRelease(argv, gyp, process.version, process.release)
+    , makeCommand = gyp.opts.make || process.env.MAKE || platformMake
+    , command = win ? 'msbuild' : makeCommand
+    , buildDir = path.resolve('build')
+    , configPath = path.resolve(buildDir, 'config.gypi')
+    , jobs = gyp.opts.jobs || process.env.JOBS
+    , buildType
+    , config
+    , arch
+    , nodeDir
 
-  // sanitize column settings
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.name = columnName
-    column.maxWidth = Math.ceil(column.maxWidth)
-    column.minWidth = Math.ceil(column.minWidth)
-    column.truncate = !!column.truncate
-    column.align = column.align || 'left'
-  })
+  loadConfigGypi()
 
-  // sanitize data
-  items = items.map(item => {
-    let result = Object.create(null)
-    columnNames.forEach(columnName => {
-      // null/undefined -> ''
-      result[columnName] = item[columnName] != null ? item[columnName] : ''
-      // toString everything
-      result[columnName] = '' + result[columnName]
-      if (columns[columnName].preserveNewLines) {
-        // merge non-newline whitespace chars
-        result[columnName] = result[columnName].replace(/[^\S\n]/gmi, ' ')
+  /**
+   * Load the "config.gypi" file that was generated during "configure".
+   */
+
+  function loadConfigGypi () {
+    fs.readFile(configPath, 'utf8', function (err, data) {
+      if (err) {
+        if (err.code == 'ENOENT') {
+          callback(new Error('You must run `node-gyp configure` first!'))
+        } else {
+          callback(err)
+        }
+        return
+      }
+      config = JSON.parse(data.replace(/\#.+\n/, ''))
+
+      // get the 'arch', 'buildType', and 'nodeDir' vars from the config
+      buildType = config.target_defaults.default_configuration
+      arch = config.variables.target_arch
+      nodeDir = config.variables.nodedir
+
+      if ('debug' in gyp.opts) {
+        buildType = gyp.opts.debug ? 'Debug' : 'Release'
+      }
+      if (!buildType) {
+        buildType = 'Release'
+      }
+
+      log.verbose('build type', buildType)
+      log.verbose('architecture', arch)
+      log.verbose('node dev dir', nodeDir)
+
+      if (win) {
+        findSolutionFile()
       } else {
-        // merge all whitespace chars
-        result[columnName] = result[columnName].replace(/\s/gmi, ' ')
+        doWhich()
       }
     })
-    return result
-  })
-
-  // transform data cells
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let col = Object.create(column)
-      item[columnName] = column.dataTransform(item[columnName], col, index)
-
-      let changedKeys = Object.keys(col)
-      // disable default heading transform if we wrote to column.name
-      if (changedKeys.indexOf('name') !== -1) {
-        if (column.headingTransform !== DEFAULT_HEADING_TRANSFORM) return
-        column.headingTransform = heading => heading
-      }
-      changedKeys.forEach(key => column[key] = col[key])
-      return item
-    })
-  })
-
-  // add headers
-  let headers = {}
-  if(options.showHeaders) {
-    columnNames.forEach(columnName => {
-      let column = columns[columnName]
-
-      if(!column.showHeaders){
-        headers[columnName] = '';
-        return;
-      }
-
-      headers[columnName] = column.headingTransform(column.name)
-    })
-    items.unshift(headers)
   }
-  // get actual max-width between min & max
-  // based on length of data in columns
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items
-    .map(item => item[columnName])
-    .reduce((min, cur) => {
-      // if already at maxWidth don't bother testing
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-    }, 0)
-  })
 
-  // split long words so they can break onto multiple lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map(item => {
-      item[columnName] = splitLongWords(item[columnName], column.width, column.truncateMarker)
-      return item
-    })
-  })
+  /**
+   * On Windows, find the first build/*.sln file.
+   */
 
-  // wrap long lines. each item is now an array of lines.
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let cell = item[columnName]
-      item[columnName] = splitIntoLines(cell, column.width)
-
-      // if truncating required, only include first line + add truncation char
-      if (column.truncate && item[columnName].length > 1) {
-        item[columnName] = splitIntoLines(cell, column.width - wcwidth(column.truncateMarker))
-        let firstLine = item[columnName][0]
-        if (!endsWith(firstLine, column.truncateMarker)) item[columnName][0] += column.truncateMarker
-        item[columnName] = item[columnName].slice(0, 1)
+  function findSolutionFile () {
+    glob('build/*.sln', function (err, files) {
+      if (err) return callback(err)
+      if (files.length === 0) {
+        return callback(new Error('Could not find *.sln file. Did you run "configure"?'))
       }
-      return item
+      guessedSolution = files[0]
+      log.verbose('found first Solution file', guessedSolution)
+      doWhich()
     })
-  })
+  }
 
-  // recalculate column widths from truncated output/lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items.map(item => {
-      return item[columnName].reduce((min, cur) => {
-        if (min >= column.maxWidth) return min
-        return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-      }, 0)
-    }).reduce((min, cur) => {
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, cur)))
-    }, 0)
-  })
+  /**
+   * Uses node-which to locate the msbuild / make executable.
+   */
 
-
-  let rows = createRows(items, columns, columnNames, options.paddingChr) // merge lines into rows
-  // conceive output
-  return rows.reduce((output, row) => {
-    return output.concat(row.reduce((rowOut, line) => {
-      return rowOut.concat(line.join(options.columnSplitter))
-    }, []))
-  }, [])
-  .map(line => truncateString(line, maxLineWidth))
-  .join(options.spacing)
-}
-
-/**
- * Convert wrapped lines into rows with padded values.
- *
- * @param Array items data to process
- * @param Array columns column width settings for wrapping
- * @param Array columnNames column ordering
- * @return Array items wrapped in arrays, corresponding to lines
- */
-
-function createRows(items, columns, columnNames, paddingChr) {
-  return items.map(item => {
-    let row = []
-    let numLines = 0
-    columnNames.forEach(columnName => {
-      numLines = Math.max(numLines, item[columnName].length)
+  function doWhich () {
+    // First make sure we have the build command in the PATH
+    which(command, function (err, execPath) {
+      if (err) {
+        if (win && /not found/.test(err.message)) {
+          // On windows and no 'msbuild' found. Let's guess where it is
+          findMsbuild()
+        } else {
+          // Some other error or 'make' not found on Unix, report that to the user
+          callback(err)
+        }
+        return
+      }
+      log.verbose('`which` succeeded for `' + command + '`', execPath)
+      doBuild()
     })
-    // combine matching lines of each rows
-    for (let i = 0; i < numLines; i++) {
-      row[i] = row[i] || []
-      columnNames.forEach(columnName => {
-        let column = columns[columnName]
-        let val = item[columnName][i] || '' // || '' ensures empty columns get padded
-        if (column.align === 'right') row[i].push(padLeft(val, column.width, paddingChr))
-        else if (column.align === 'center' || column.align === 'centre') row[i].push(padCenter(val, column.width, paddingChr))
-        else row[i].push(padRight(val, column.width, paddingChr))
-      })
+  }
+
+  /**
+   * Search for the location of "msbuild.exe" file on Windows.
+   */
+
+  function findMsbuild () {
+    if (config.variables.msbuild_path) {
+      command = config.variables.msbuild_path
+      log.verbose('using MSBuild:', command)
+      doBuild()
+      return
     }
-    return row
-  })
-}
 
-/**
- * Object.assign
- *
- * @return Object Object with properties mixed in.
- */
+    log.verbose('could not find "msbuild.exe" in PATH - finding location in registry')
+    var notfoundErr = 'Can\'t find "msbuild.exe". Do you have Microsoft Visual Studio C++ 2008+ installed?'
+    var cmd = 'reg query "HKLM\\Software\\Microsoft\\MSBuild\\ToolsVersions" /s'
+    if (process.arch !== 'ia32')
+      cmd += ' /reg:32'
+    exec(cmd, function (err, stdout, stderr) {
+      if (err) {
+        return callback(new Error(err.message + '\n' + notfoundErr))
+      }
+      var reVers = /ToolsVersions\\([^\\]+)$/i
+        , rePath = /\r\n[ \t]+MSBuildToolsPath[ \t]+REG_SZ[ \t]+([^\r]+)/i
+        , msbuilds = []
+        , r
+        , msbuildPath
+      stdout.split('\r\n\r\n').forEach(function(l) {
+        if (!l) return
+        l = l.trim()
+        if (r = reVers.exec(l.substring(0, l.indexOf('\r\n')))) {
+          var ver = parseFloat(r[1], 10)
+          if (ver >= 3.5) {
+            if (r = rePath.exec(l)) {
+              msbuilds.push({
+                version: ver,
+                path: r[1]
+              })
+            }
+          }
+        }
+      })
+      msbuilds.sort(function (x, y) {
+        return (x.version < y.version ? -1 : 1)
+      })
+      ;(function verifyMsbuild () {
+        if (!msbuilds.length) return callback(new Error(notfoundErr))
+        msbuildPath = path.resolve(msbuilds.pop().path, 'msbuild.exe')
+        fs.stat(msbuildPath, function (err, stat) {
+          if (err) {
+            if (err.code == 'ENOENT') {
+              if (msbuilds.length) {
+                return verifyMsbuild()
+              } else {
+                callback(new Error(notfoundErr))
+              }
+            } else {
+              callback(err)
+            }
+            return
+          }
+          command = msbuildPath
+          doBuild()
+        })
+      })()
+    })
+  }
 
-function mixin(...args) {
-  if (Object.assign) return Object.assign(...args)
-  return ObjectAssign(...args)
-}
 
-function ObjectAssign(target, firstSource) {
-  "use strict";
-  if (target === undefined || target === null)
-    throw new TypeError("Cannot convert first argument to object");
+  /**
+   * Actually spawn the process and compile the module.
+   */
 
-  var to = Object(target);
+  function doBuild () {
 
-  var hasPendingException = false;
-  var pendingException;
+    // Enable Verbose build
+    var verbose = log.levels[log.level] <= log.levels.verbose
+    if (!win && verbose) {
+      argv.push('V=1')
+    }
+    if (win && !verbose) {
+      argv.push('/clp:Verbosity=minimal')
+    }
 
-  for (var i = 1; i < arguments.length; i++) {
-    var nextSource = arguments[i];
-    if (nextSource === undefined || nextSource === null)
-      continue;
+    if (win) {
+      // Turn off the Microsoft logo on Windows
+      argv.push('/nologo')
+    }
 
-    var keysArray = Object.keys(Object(nextSource));
-    for (var nextIndex = 0, len = keysArray.length; nextIndex < len; nextIndex++) {
-      var nextKey = keysArray[nextIndex];
-      try {
-        var desc = Object.getOwnPropertyDescriptor(nextSource, nextKey);
-        if (desc !== undefined && desc.enumerable)
-          to[nextKey] = nextSource[nextKey];
-      } catch (e) {
-        if (!hasPendingException) {
-          hasPendingException = true;
-          pendingException = e;
+    // Specify the build type, Release by default
+    if (win) {
+      var archLower = arch.toLowerCase()
+      var p = archLower === 'x64' ? 'x64' :
+              (archLower === 'arm' ? 'ARM' : 'Win32')
+      argv.push('/p:Configuration=' + buildType + ';Platform=' + p)
+      if (jobs) {
+        var j = parseInt(jobs, 10)
+        if (!isNaN(j) && j > 0) {
+          argv.push('/m:' + j)
+        } else if (jobs.toUpperCase() === 'MAX') {
+          argv.push('/m:' + require('os').cpus().length)
+        }
+      }
+    } else {
+      argv.push('BUILDTYPE=' + buildType)
+      // Invoke the Makefile in the 'build' dir.
+      argv.push('-C')
+      argv.push('build')
+      if (jobs) {
+        var j = parseInt(jobs, 10)
+        if (!isNaN(j) && j > 0) {
+          argv.push('--jobs')
+          argv.push(j)
+        } else if (jobs.toUpperCase() === 'MAX') {
+          argv.push('--jobs')
+          argv.push(require('os').cpus().length)
         }
       }
     }
 
-    if (hasPendingException)
-      throw pendingException;
+    if (win) {
+      // did the user specify their own .sln file?
+      var hasSln = argv.some(function (arg) {
+        return path.extname(arg) == '.sln'
+      })
+      if (!hasSln) {
+        argv.unshift(gyp.opts.solution || guessedSolution)
+      }
+    }
+
+    var proc = gyp.spawn(command, argv)
+    proc.on('exit', onExit)
   }
-  return to;
-}
 
-/**
- * Adapted from String.prototype.endsWith polyfill.
- */
+  /**
+   * Invoked after the make/msbuild command exits.
+   */
 
-function endsWith(target, searchString, position) {
-  position = position || target.length;
-  position = position - searchString.length;
-  let lastIndex = target.lastIndexOf(searchString);
-  return lastIndex !== -1 && lastIndex === position;
-}
-
-
-function toArray(items, columnNames) {
-  if (Array.isArray(items)) return items
-  let rows = []
-  for (let key in items) {
-    let item = {}
-    item[columnNames[0] || 'key'] = key
-    item[columnNames[1] || 'value'] = items[key]
-    rows.push(item)
+  function onExit (code, signal) {
+    if (code !== 0) {
+      return callback(new Error('`' + command + '` failed with exit code: ' + code))
+    }
+    if (signal) {
+      return callback(new Error('`' + command + '` got signal: ' + signal))
+    }
+    callback()
   }
-  return rows
+
 }
