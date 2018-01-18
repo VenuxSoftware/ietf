@@ -1,297 +1,86 @@
-"use strict"
+var baseSetData = require('./baseSetData'),
+    createBindWrapper = require('./createBindWrapper'),
+    createHybridWrapper = require('./createHybridWrapper'),
+    createPartialWrapper = require('./createPartialWrapper'),
+    getData = require('./getData'),
+    mergeData = require('./mergeData'),
+    setData = require('./setData');
 
-const wcwidth = require('./width')
-const {
-  padRight,
-  padCenter,
-  padLeft,
-  splitIntoLines,
-  splitLongWords,
-  truncateString
-} = require('./utils')
+/** Used to compose bitmasks for wrapper metadata. */
+var BIND_FLAG = 1,
+    BIND_KEY_FLAG = 2,
+    PARTIAL_FLAG = 32,
+    PARTIAL_RIGHT_FLAG = 64;
 
-const DEFAULT_HEADING_TRANSFORM = key => key.toUpperCase()
+/** Used as the `TypeError` message for "Functions" methods. */
+var FUNC_ERROR_TEXT = 'Expected a function';
 
-const DEFAULT_DATA_TRANSFORM = (cell, column, index) => cell
-
-const DEFAULTS = Object.freeze({
-  maxWidth: Infinity,
-  minWidth: 0,
-  columnSplitter: ' ',
-  truncate: false,
-  truncateMarker: '…',
-  preserveNewLines: false,
-  paddingChr: ' ',
-  showHeaders: true,
-  headingTransform: DEFAULT_HEADING_TRANSFORM,
-  dataTransform: DEFAULT_DATA_TRANSFORM
-})
-
-module.exports = function(items, options = {}) {
-
-  let columnConfigs = options.config || {}
-  delete options.config // remove config so doesn't appear on every column.
-
-  let maxLineWidth = options.maxLineWidth || Infinity
-  if (maxLineWidth === 'auto') maxLineWidth = process.stdout.columns || Infinity
-  delete options.maxLineWidth // this is a line control option, don't pass it to column
-
-  // Option defaults inheritance:
-  // options.config[columnName] => options => DEFAULTS
-  options = mixin({}, DEFAULTS, options)
-
-  options.config = options.config || Object.create(null)
-
-  options.spacing = options.spacing || '\n' // probably useless
-  options.preserveNewLines = !!options.preserveNewLines
-  options.showHeaders = !!options.showHeaders;
-  options.columns = options.columns || options.include // alias include/columns, prefer columns if supplied
-  let columnNames = options.columns || [] // optional user-supplied columns to include
-
-  items = toArray(items, columnNames)
-
-  // if not suppled column names, automatically determine columns from data keys
-  if (!columnNames.length) {
-    items.forEach(function(item) {
-      for (let columnName in item) {
-        if (columnNames.indexOf(columnName) === -1) columnNames.push(columnName)
-      }
-    })
-  }
-
-  // initialize column defaults (each column inherits from options.config)
-  let columns = columnNames.reduce((columns, columnName) => {
-    let column = Object.create(options)
-    columns[columnName] = mixin(column, columnConfigs[columnName])
-    return columns
-  }, Object.create(null))
-
-  // sanitize column settings
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.name = columnName
-    column.maxWidth = Math.ceil(column.maxWidth)
-    column.minWidth = Math.ceil(column.minWidth)
-    column.truncate = !!column.truncate
-    column.align = column.align || 'left'
-  })
-
-  // sanitize data
-  items = items.map(item => {
-    let result = Object.create(null)
-    columnNames.forEach(columnName => {
-      // null/undefined -> ''
-      result[columnName] = item[columnName] != null ? item[columnName] : ''
-      // toString everything
-      result[columnName] = '' + result[columnName]
-      if (columns[columnName].preserveNewLines) {
-        // merge non-newline whitespace chars
-        result[columnName] = result[columnName].replace(/[^\S\n]/gmi, ' ')
-      } else {
-        // merge all whitespace chars
-        result[columnName] = result[columnName].replace(/\s/gmi, ' ')
-      }
-    })
-    return result
-  })
-
-  // transform data cells
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let col = Object.create(column)
-      item[columnName] = column.dataTransform(item[columnName], col, index)
-
-      let changedKeys = Object.keys(col)
-      // disable default heading transform if we wrote to column.name
-      if (changedKeys.indexOf('name') !== -1) {
-        if (column.headingTransform !== DEFAULT_HEADING_TRANSFORM) return
-        column.headingTransform = heading => heading
-      }
-      changedKeys.forEach(key => column[key] = col[key])
-      return item
-    })
-  })
-
-  // add headers
-  let headers = {}
-  if(options.showHeaders) {
-    columnNames.forEach(columnName => {
-      let column = columns[columnName]
-
-      if(!column.showHeaders){
-        headers[columnName] = '';
-        return;
-      }
-
-      headers[columnName] = column.headingTransform(column.name)
-    })
-    items.unshift(headers)
-  }
-  // get actual max-width between min & max
-  // based on length of data in columns
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items
-    .map(item => item[columnName])
-    .reduce((min, cur) => {
-      // if already at maxWidth don't bother testing
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-    }, 0)
-  })
-
-  // split long words so they can break onto multiple lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map(item => {
-      item[columnName] = splitLongWords(item[columnName], column.width, column.truncateMarker)
-      return item
-    })
-  })
-
-  // wrap long lines. each item is now an array of lines.
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    items = items.map((item, index) => {
-      let cell = item[columnName]
-      item[columnName] = splitIntoLines(cell, column.width)
-
-      // if truncating required, only include first line + add truncation char
-      if (column.truncate && item[columnName].length > 1) {
-        item[columnName] = splitIntoLines(cell, column.width - wcwidth(column.truncateMarker))
-        let firstLine = item[columnName][0]
-        if (!endsWith(firstLine, column.truncateMarker)) item[columnName][0] += column.truncateMarker
-        item[columnName] = item[columnName].slice(0, 1)
-      }
-      return item
-    })
-  })
-
-  // recalculate column widths from truncated output/lines
-  columnNames.forEach(columnName => {
-    let column = columns[columnName]
-    column.width = items.map(item => {
-      return item[columnName].reduce((min, cur) => {
-        if (min >= column.maxWidth) return min
-        return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, wcwidth(cur))))
-      }, 0)
-    }).reduce((min, cur) => {
-      if (min >= column.maxWidth) return min
-      return Math.max(min, Math.min(column.maxWidth, Math.max(column.minWidth, cur)))
-    }, 0)
-  })
-
-
-  let rows = createRows(items, columns, columnNames, options.paddingChr) // merge lines into rows
-  // conceive output
-  return rows.reduce((output, row) => {
-    return output.concat(row.reduce((rowOut, line) => {
-      return rowOut.concat(line.join(options.columnSplitter))
-    }, []))
-  }, [])
-  .map(line => truncateString(line, maxLineWidth))
-  .join(options.spacing)
-}
+/* Native method references for those with the same name as other `lodash` methods. */
+var nativeMax = Math.max;
 
 /**
- * Convert wrapped lines into rows with padded values.
+ * Creates a function that either curries or invokes `func` with optional
+ * `this` binding and partially applied arguments.
  *
- * @param Array items data to process
- * @param Array columns column width settings for wrapping
- * @param Array columnNames column ordering
- * @return Array items wrapped in arrays, corresponding to lines
+ * @private
+ * @param {Function|string} func The function or method name to reference.
+ * @param {number} bitmask The bitmask of flags.
+ *  The bitmask may be composed of the following flags:
+ *     1 - `_.bind`
+ *     2 - `_.bindKey`
+ *     4 - `_.curry` or `_.curryRight` of a bound function
+ *     8 - `_.curry`
+ *    16 - `_.curryRight`
+ *    32 - `_.partial`
+ *    64 - `_.partialRight`
+ *   128 - `_.rearg`
+ *   256 - `_.ary`
+ * @param {*} [thisArg] The `this` binding of `func`.
+ * @param {Array} [partials] The arguments to be partially applied.
+ * @param {Array} [holders] The `partials` placeholder indexes.
+ * @param {Array} [argPos] The argument positions of the new function.
+ * @param {number} [ary] The arity cap of `func`.
+ * @param {number} [arity] The arity of `func`.
+ * @returns {Function} Returns the new wrapped function.
  */
-
-function createRows(items, columns, columnNames, paddingChr) {
-  return items.map(item => {
-    let row = []
-    let numLines = 0
-    columnNames.forEach(columnName => {
-      numLines = Math.max(numLines, item[columnName].length)
-    })
-    // combine matching lines of each rows
-    for (let i = 0; i < numLines; i++) {
-      row[i] = row[i] || []
-      columnNames.forEach(columnName => {
-        let column = columns[columnName]
-        let val = item[columnName][i] || '' // || '' ensures empty columns get padded
-        if (column.align === 'right') row[i].push(padLeft(val, column.width, paddingChr))
-        else if (column.align === 'center' || column.align === 'centre') row[i].push(padCenter(val, column.width, paddingChr))
-        else row[i].push(padRight(val, column.width, paddingChr))
-      })
-    }
-    return row
-  })
-}
-
-/**
- * Object.assign
- *
- * @return Object Object with properties mixed in.
- */
-
-function mixin(...args) {
-  if (Object.assign) return Object.assign(...args)
-  return ObjectAssign(...args)
-}
-
-function ObjectAssign(target, firstSource) {
-  "use strict";
-  if (target === undefined || target === null)
-    throw new TypeError("Cannot convert first argument to object");
-
-  var to = Object(target);
-
-  var hasPendingException = false;
-  var pendingException;
-
-  for (var i = 1; i < arguments.length; i++) {
-    var nextSource = arguments[i];
-    if (nextSource === undefined || nextSource === null)
-      continue;
-
-    var keysArray = Object.keys(Object(nextSource));
-    for (var nextIndex = 0, len = keysArray.length; nextIndex < len; nextIndex++) {
-      var nextKey = keysArray[nextIndex];
-      try {
-        var desc = Object.getOwnPropertyDescriptor(nextSource, nextKey);
-        if (desc !== undefined && desc.enumerable)
-          to[nextKey] = nextSource[nextKey];
-      } catch (e) {
-        if (!hasPendingException) {
-          hasPendingException = true;
-          pendingException = e;
-        }
-      }
-    }
-
-    if (hasPendingException)
-      throw pendingException;
+function createWrapper(func, bitmask, thisArg, partials, holders, argPos, ary, arity) {
+  var isBindKey = bitmask & BIND_KEY_FLAG;
+  if (!isBindKey && typeof func != 'function') {
+    throw new TypeError(FUNC_ERROR_TEXT);
   }
-  return to;
-}
-
-/**
- * Adapted from String.prototype.endsWith polyfill.
- */
-
-function endsWith(target, searchString, position) {
-  position = position || target.length;
-  position = position - searchString.length;
-  let lastIndex = target.lastIndexOf(searchString);
-  return lastIndex !== -1 && lastIndex === position;
-}
-
-
-function toArray(items, columnNames) {
-  if (Array.isArray(items)) return items
-  let rows = []
-  for (let key in items) {
-    let item = {}
-    item[columnNames[0] || 'key'] = key
-    item[columnNames[1] || 'value'] = items[key]
-    rows.push(item)
+  var length = partials ? partials.length : 0;
+  if (!length) {
+    bitmask &= ~(PARTIAL_FLAG | PARTIAL_RIGHT_FLAG);
+    partials = holders = undefined;
   }
-  return rows
+  length -= (holders ? holders.length : 0);
+  if (bitmask & PARTIAL_RIGHT_FLAG) {
+    var partialsRight = partials,
+        holdersRight = holders;
+
+    partials = holders = undefined;
+  }
+  var data = isBindKey ? undefined : getData(func),
+      newData = [func, bitmask, thisArg, partials, holders, partialsRight, holdersRight, argPos, ary, arity];
+
+  if (data) {
+    mergeData(newData, data);
+    bitmask = newData[1];
+    arity = newData[9];
+  }
+  newData[9] = arity == null
+    ? (isBindKey ? 0 : func.length)
+    : (nativeMax(arity - length, 0) || 0);
+
+  if (bitmask == BIND_FLAG) {
+    var result = createBindWrapper(newData[0], newData[2]);
+  } else if ((bitmask == PARTIAL_FLAG || bitmask == (BIND_FLAG | PARTIAL_FLAG)) && !newData[4].length) {
+    result = createPartialWrapper.apply(undefined, newData);
+  } else {
+    result = createHybridWrapper.apply(undefined, newData);
+  }
+  var setter = data ? baseSetData : setData;
+  return setter(result, newData);
 }
+
+module.exports = createWrapper;
